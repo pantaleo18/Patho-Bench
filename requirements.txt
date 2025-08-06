@@ -4,5 +4,5 @@ scikit-learn
 scikit-survival
 lovely-tensors
 seaborn
-datasets
+datasets==3.6.0
 einops
