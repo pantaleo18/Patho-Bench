@@ -20,7 +20,7 @@ dependencies = [
     "scikit-survival",
     "lovely-tensors",
     "seaborn",
-    "datasets"
+    "datasets==3.6.0"
 ]
 
 [tool.setuptools.packages.find]
