@@ -104,7 +104,7 @@ class LoggingMixin:
         '''
         import patho_bench.experiments.utils.FancyLayers # Overrides the default __repr__ method for all torch.nn.Module objects so that it shows frozen and trainable layers
         
-        with open(save_path, "w") as f:
+        with open(save_path, "w", encoding="utf-8") as f:
             f.write(str(model))
             f.write("\n")
             f.write(f"Total number of parameters: {sum(param.numel() for param in model.parameters())} \n")
