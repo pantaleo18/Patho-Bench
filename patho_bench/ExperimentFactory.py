@@ -470,7 +470,6 @@ class ExperimentFactory:
             experiment.train()
             experiment.test()
 
-            
     @staticmethod
     def _prepare_internal_dataset(split_path: str,
                                   task_config: str,
