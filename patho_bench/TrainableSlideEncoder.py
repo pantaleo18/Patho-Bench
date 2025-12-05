@@ -15,7 +15,8 @@ class TrainableSlideEncoder(nn.Module):
                  task_name,
                  num_classes,
                  loss,
-                 device):
+                 device,
+                 label_dict):
         '''
         Initializes a trainable classifier using a preloaded slide encoder.
 
@@ -34,6 +35,7 @@ class TrainableSlideEncoder(nn.Module):
         self.num_classes = num_classes
         self.loss = loss
         self.device = device
+        self.label_dict = label_dict
 
         # Create classification head
         # Input shape: batch_size x feature_dim

@@ -269,15 +269,25 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             labels (np.array or dict): Ground truth labels
             preds (np.array): Predictions
             save_dir (str): Directory to save metrics to
+            label_dict (dict, optional): Mapping from integer codes to original label names
         """
         if self.task_type == 'classification':
-            self.auc_roc(labels, preds, self.model_kwargs['num_classes'], saveto = os.path.join(save_dir, "roc_curves.png"))
-            self.confusion_matrix(labels, preds, self.model_kwargs['num_classes'], saveto = os.path.join(save_dir, "confusion_matrices.png"))
-            self.precision_recall(labels, preds, self.model_kwargs['num_classes'], saveto = os.path.join(save_dir, "pr_curves.png"))
-            scores = self.classification_metrics(labels, preds, self.model_kwargs['num_classes'], saveto = os.path.join(save_dir, "metrics.json"))
+            self.auc_roc(labels, preds, self.model_kwargs['num_classes'], 
+                        saveto=os.path.join(save_dir, "roc_curves.png"),
+                        label_dict=self.model_kwargs['label_dict'])
+            self.confusion_matrix(labels, preds, self.model_kwargs['num_classes'], 
+                                saveto=os.path.join(save_dir, "confusion_matrices.png"),
+                                label_dict=self.model_kwargs['label_dict'])
+            self.precision_recall(labels, preds, self.model_kwargs['num_classes'], 
+                                saveto=os.path.join(save_dir, "pr_curves.png"),
+                                label_dict=self.model_kwargs['label_dict'])
+            scores = self.classification_metrics(labels, preds, self.model_kwargs['num_classes'], 
+                                                saveto=os.path.join(save_dir, "metrics.json"),
+                                                label_dict=self.model_kwargs['label_dict'])
             return scores['overall']
         elif self.task_type == 'survival':
-            scores = self.survival_metrics(labels['survival_event'], labels['survival_time'], preds, saveto = os.path.join(save_dir, "metrics.json"))
+            scores = self.survival_metrics(labels['survival_event'], labels['survival_time'], 
+                                        preds, saveto=os.path.join(save_dir, "metrics.json"))
             return scores
 
     def _finalize_metrics(self, split, labels_across_folds, preds_across_folds, scores_across_folds):

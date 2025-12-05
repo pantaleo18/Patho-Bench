@@ -12,16 +12,11 @@ Contains visualization methods for classification tasks
 """
 
 class ClassificationMixin:
-    def auc_roc(self, y_true, preds, num_classes, saveto=None):
+    def auc_roc(self, y_true, preds, num_classes, saveto=None, label_dict=None):
         """
         Generates multi-class ROC curves and computes AUC for each class ('one-vs-rest')
-
-        Args:
-            y_true (Array[int]): 1D ground truth labels for each sample
-            preds (Array[float]): N-dimensional predictions for each sample, where N is the number of classes
-            num_classes (int): Number of classes
-            saveto (str, optional): Path to save figure
         """
+        # Binarizzazione basata su codici interi (necessaria per sklearn)
         y_true_bin = self.binarize_labels(y_true, num_classes)
 
         fig, ax = plt.subplots(figsize=(10, 10))
@@ -29,49 +24,47 @@ class ClassificationMixin:
         # Compute auc scores for each class
         auc_scores = roc_auc_score(y_true_bin, preds, average=None, multi_class='ovr')
 
-        # Plot ROC curve for each class
+        # Plot ROC curve per classe
         for j in range(num_classes):
             fpr, tpr, _ = roc_curve(y_true_bin[:, j], preds[:, j])
-            ax.plot(fpr, tpr, label=f"Class {j} (OVR AUC={auc_scores[j]:.2f})", color=sns.color_palette("Set1", n_colors=num_classes)[j])
+            # Legenda: usa label_dict se disponibile, altrimenti indice numerico
+            label_name = label_dict[j] if label_dict is not None else str(j)
+            ax.plot(fpr, tpr, label=f"{label_name} (OVR AUC={auc_scores[j]:.2f})",
+                    color=sns.color_palette("Set1", n_colors=num_classes)[j])
 
-        # ROC curve styling
+        # Styling
         ax.plot([0, 1], [0, 1], linestyle="--", color="k", linewidth=0.8)
         ax.set_xlabel("False Positive Rate", fontsize=14)
         ax.set_ylabel("True Positive Rate", fontsize=14)
         ax.set_title(f"ROC Curve ({num_classes} classes)", fontsize=16, pad=20)
         ax.legend(loc="lower right", frameon=False, fontsize=12)
-        
+
         fig.tight_layout()
         if saveto is not None:
             os.makedirs(os.path.dirname(saveto), exist_ok=True)
             fig.savefig(saveto)
         plt.close()
 
-    def precision_recall(self, y_true, preds, num_classes, saveto=None):
+    def precision_recall(self, y_true, preds, num_classes, saveto=None, label_dict=None):
         """
         Generates precision-recall curves and computes AUC for each class in multi-class classification.
-
-        Args:
-            y_true (Array[int]): 1D ground truth labels for each sample
-            preds (Array[float]): N-dimensional predictions for each sample, where N is the number of classes
-            num_classes (int): Number of classes
-            saveto (str, optional): Path to save figure
         """
         y_true_bin = self.binarize_labels(y_true, num_classes)
 
         fig_pr, ax_pr = plt.subplots(figsize=(10, 10))
 
-        # Plot PR curve for each class
         for j in range(num_classes):
             precision, recall, _ = precision_recall_curve(y_true_bin[:, j], preds[:, j])
             auc_pr = auc(recall, precision)
-            ax_pr.plot(recall, precision, label=f"Class {j} (OVR PR={auc_pr:.2f})", color=sns.color_palette("Set1", n_colors=num_classes)[j])
+            label_name = label_dict[j] if label_dict is not None else str(j)
+            ax_pr.plot(recall, precision, label=f"{label_name} (OVR PR={auc_pr:.2f})",
+                    color=sns.color_palette("Set1", n_colors=num_classes)[j])
 
-            # Compute no-skill line
+            # No-skill line
             no_skill = sum(y_true_bin[:, j]) / len(y_true_bin[:, j])
-            ax_pr.plot([0, 1], [no_skill, no_skill], linestyle="--", color=sns.color_palette("Set1", n_colors=num_classes)[j], linewidth=0.8,)
+            ax_pr.plot([0, 1], [no_skill, no_skill], linestyle="--",
+                    color=sns.color_palette("Set1", n_colors=num_classes)[j], linewidth=0.8)
 
-        # PR curve styling
         ax_pr.set_xlabel("Recall", fontsize=14)
         ax_pr.set_ylabel("Precision", fontsize=14)
         ax_pr.set_title(f"Precision-Recall Curve ({num_classes} classes)", fontsize=16, pad=20)
@@ -85,7 +78,7 @@ class ClassificationMixin:
             fig_pr.savefig(saveto)
         plt.close()
 
-    def confusion_matrix(self, y_true, preds, num_classes, threshold=None, saveto=None):
+    def confusion_matrix(self, y_true, preds, num_classes, threshold=None, saveto=None, label_dict=None):
         """
         Generates a confusion matrix for multi-class classification.
 
@@ -95,6 +88,7 @@ class ClassificationMixin:
             num_classes (int): Number of classes
             threshold (float, optional): Custom threshold for classification. If None, use highest score.
             saveto (str, optional): Path to save figure
+            label_dict (dict, optional): Mapping from integer codes to original label names
         """
         y_pred = self.get_predicted_labels(preds, threshold)
 
@@ -102,10 +96,17 @@ class ClassificationMixin:
 
         matrix = confusion_matrix(y_true, y_pred, labels=list(range(num_classes)))
         sns.heatmap(matrix, annot=True, fmt="g", cmap="Blues", ax=ax_cm)
+
+        # Determina le etichette da mostrare sugli assi
+        if label_dict is not None:
+            tick_labels = [label_dict[i] for i in range(num_classes)]
+        else:
+            tick_labels = list(range(num_classes))
+
         ax_cm.set_xlabel("Predicted label")
         ax_cm.set_ylabel("True label")
-        ax_cm.set_xticklabels(list(range(num_classes)))
-        ax_cm.set_yticklabels(list(range(num_classes)))
+        ax_cm.set_xticklabels(tick_labels, rotation=45, ha='right')
+        ax_cm.set_yticklabels(tick_labels, rotation=0)
         ax_cm.set_title(f"Confusion Matrix with T={threshold:.2f}" if threshold is not None else "Confusion Matrix")
         ax_cm.set_aspect("equal")
         ax_cm.collections[0].colorbar.remove()
@@ -116,7 +117,7 @@ class ClassificationMixin:
             fig_cm.savefig(saveto)
         plt.close()
 
-    def classification_metrics(self, y_true, preds, num_classes, threshold=None, saveto=None):
+    def classification_metrics(self, y_true, preds, num_classes, threshold=None, saveto=None, label_dict = None):
         """
         Computes precision, recall, accuracy, and other metrics for multi-class classification.
 
@@ -183,7 +184,7 @@ class ClassificationMixin:
         # Add column if num_classes == 2, because label_binarize only returns one column (for positive class) for binary classification
         return np.hstack((1 - y_true_bin, y_true_bin)) if num_classes == 2 else y_true_bin
     
-    def get_predicted_labels(self, preds, threshold=None):
+    def get_predicted_labels(self, preds, threshold=None, label_dict = None):
         """
         Gets predicted labels from predictions
 

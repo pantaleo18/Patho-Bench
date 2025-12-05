@@ -325,7 +325,8 @@ class ExperimentFactory:
                         'post_pooling_dim': slide_encoder.embedding_dim,
                         'task_name': task_name,
                         'num_classes': len(task_info['label_dict']),
-                        'loss': loss
+                        'loss': loss,
+                        'label_dict' : task_info['label_dict'],
                         }
 
         ###### Configure scheduler ################################################################
