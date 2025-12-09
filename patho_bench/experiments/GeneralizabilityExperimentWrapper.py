@@ -4,6 +4,7 @@ class GeneralizabilityExperimentWrapper:
                  external_dataset,
                  test_external_only: bool,
                  saveto: str,
+                 color_map : dict
                  ):
         '''
         Wrapper class for generalizability linprobe experiments.
@@ -21,6 +22,7 @@ class GeneralizabilityExperimentWrapper:
         self.external_dataset = external_dataset
         self.test_external_only = test_external_only
         self.saveto = saveto
+        self.color_map = color_map
         
         if test_external_only:
             print(f"\033[96mRunning generalizability experiment with test_external_only = True...\033[0m")

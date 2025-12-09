@@ -12,25 +12,21 @@ Contains visualization methods for classification tasks
 """
 
 class ClassificationMixin:
-    def auc_roc(self, y_true, preds, num_classes, saveto=None, label_dict=None):
-        """
-        Generates multi-class ROC curves and computes AUC for each class ('one-vs-rest')
-        """
-        # Binarizzazione basata su codici interi (necessaria per sklearn)
+    
+    def auc_roc(self, y_true, preds, num_classes, saveto=None, label_dict=None, color_map=None):
         y_true_bin = self.binarize_labels(y_true, num_classes)
 
-        fig, ax = plt.subplots(figsize=(10, 10))
+        colors = self._resolve_color_map(color_map, num_classes, label_dict)
 
-        # Compute auc scores for each class
+        fig, ax = plt.subplots(figsize=(10, 10))
         auc_scores = roc_auc_score(y_true_bin, preds, average=None, multi_class='ovr')
 
-        # Plot ROC curve per classe
         for j in range(num_classes):
             fpr, tpr, _ = roc_curve(y_true_bin[:, j], preds[:, j])
-            # Legenda: usa label_dict se disponibile, altrimenti indice numerico
-            label_name = label_dict[j] if label_dict is not None else str(j)
-            ax.plot(fpr, tpr, label=f"{label_name} (OVR AUC={auc_scores[j]:.2f})",
-                    color=sns.color_palette("Set1", n_colors=num_classes)[j])
+            label_name = label_dict[j] if label_dict else str(j)
+            ax.plot(fpr, tpr, 
+                    label=f"{label_name} (OVR AUC={auc_scores[j]:.2f})",
+                    color=colors[j])
 
         # Styling
         ax.plot([0, 1], [0, 1], linestyle="--", color="k", linewidth=0.8)
@@ -45,25 +41,25 @@ class ClassificationMixin:
             fig.savefig(saveto)
         plt.close()
 
-    def precision_recall(self, y_true, preds, num_classes, saveto=None, label_dict=None):
-        """
-        Generates precision-recall curves and computes AUC for each class in multi-class classification.
-        """
+    def precision_recall(self, y_true, preds, num_classes, saveto=None, label_dict=None, color_map=None):
         y_true_bin = self.binarize_labels(y_true, num_classes)
+        
+        colors = self._resolve_color_map(color_map, num_classes, label_dict)
 
         fig_pr, ax_pr = plt.subplots(figsize=(10, 10))
 
         for j in range(num_classes):
             precision, recall, _ = precision_recall_curve(y_true_bin[:, j], preds[:, j])
             auc_pr = auc(recall, precision)
-            label_name = label_dict[j] if label_dict is not None else str(j)
-            ax_pr.plot(recall, precision, label=f"{label_name} (OVR PR={auc_pr:.2f})",
-                    color=sns.color_palette("Set1", n_colors=num_classes)[j])
+            label_name = label_dict[j] if label_dict else str(j)
 
-            # No-skill line
+            ax_pr.plot(recall, precision, label=f"{label_name} (OVR PR={auc_pr:.2f})",
+                    color=colors[j])
+
+            # No-score line
             no_skill = sum(y_true_bin[:, j]) / len(y_true_bin[:, j])
             ax_pr.plot([0, 1], [no_skill, no_skill], linestyle="--",
-                    color=sns.color_palette("Set1", n_colors=num_classes)[j], linewidth=0.8)
+                    color=colors[j], linewidth=0.8)
 
         ax_pr.set_xlabel("Recall", fontsize=14)
         ax_pr.set_ylabel("Precision", fontsize=14)
@@ -199,3 +195,47 @@ class ClassificationMixin:
             return np.array([np.argmax(row) if max(row) > threshold else -1 for row in preds])
         else:
             return np.argmax(preds, axis=1)
+        
+    def _resolve_color_map(self, color_map, num_classes, label_dict=None):
+        """
+        Returns color list indexed by class (0..num_classes-1).
+
+        Supports:
+        - list/tuple of colors
+        - seaborn/matplotlib palette name
+        - dict[label_name] = color
+        """
+
+        # Case 1: user provides a dict of label_name: color
+        if isinstance(color_map, dict):
+            if label_dict is None:
+                raise ValueError("A label_dict is required when color_map is a dict keyed by label names.")
+
+            colors = []
+            for class_idx in range(num_classes):
+                label_name = label_dict[class_idx]
+                if label_name not in color_map:
+                    raise ValueError(f"Missing color for label '{label_name}' in color_map.")
+                colors.append(color_map[label_name])
+            return colors
+
+        # Case 2: list/tuple of colors
+        if isinstance(color_map, (list, tuple)):
+            if len(color_map) < num_classes:
+                raise ValueError("color_map list must have at least num_classes colors.")
+            return list(color_map)
+
+        # Case 3: palette string (sns or mpl)
+        if isinstance(color_map, str):
+            try:
+                return sns.color_palette(color_map, n_colors=num_classes)
+            except:
+                try:
+                    import matplotlib.cm as cm
+                    cmap = cm.get_cmap(color_map)
+                    return [cmap(i / num_classes) for i in range(num_classes)]
+                except:
+                    print(f"WARNING: Unknown color_map '{color_map}'. Using default Set1.")
+
+        # Default fallback
+        return sns.color_palette("Set1", n_colors=num_classes)

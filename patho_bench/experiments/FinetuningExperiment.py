@@ -46,6 +46,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                  view_progress: str = 'bar',
                  lr_logging_interval: int = None,
                  seed: int = 7,
+                 color_map : dict = None,
                  **kwargs):
         """
         Base class for all experiments.
@@ -88,6 +89,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
         self.lr_logging_interval = lr_logging_interval
         self.seed = seed
         self.set_seed(self.seed)
+        self.color_map = color_map
         
         # Set kwargs as extra attributes for saving in config.json
         for key, value in kwargs.items():
@@ -274,12 +276,12 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
         if self.task_type == 'classification':
             self.auc_roc(labels, preds, self.model_kwargs['num_classes'], 
                         saveto=os.path.join(save_dir, "roc_curves.png"),
-                        label_dict=self.model_kwargs['label_dict'])
-            self.confusion_matrix(labels, preds, self.model_kwargs['num_classes'], 
-                                saveto=os.path.join(save_dir, "confusion_matrices.png"),
-                                label_dict=self.model_kwargs['label_dict'])
+                        label_dict=self.model_kwargs['label_dict'],color_map = self.color_map)
             self.precision_recall(labels, preds, self.model_kwargs['num_classes'], 
                                 saveto=os.path.join(save_dir, "pr_curves.png"),
+                                label_dict=self.model_kwargs['label_dict'],color_map = self.color_map)
+            self.confusion_matrix(labels, preds, self.model_kwargs['num_classes'], 
+                                saveto=os.path.join(save_dir, "confusion_matrices.png"),
                                 label_dict=self.model_kwargs['label_dict'])
             scores = self.classification_metrics(labels, preds, self.model_kwargs['num_classes'], 
                                                 saveto=os.path.join(save_dir, "metrics.json"),

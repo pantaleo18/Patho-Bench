@@ -14,6 +14,7 @@ from patho_bench.helpers.GPUManager import GPUManager
 from patho_bench.optim.NLLSurvLoss import NLLSurvLoss
 from sklearn.utils.class_weight import compute_class_weight
 from trident.slide_encoder_models.load import encoder_factory
+import json
 
 """
 This file contains the ExperimentFactory class which is responsible for instantiating the appropriate experiment object.
@@ -263,7 +264,9 @@ class ExperimentFactory:
                  batch_size = 1, # Only batch_size = 1 is supported for finetuning for now
                  external_split: str = None,
                  external_saveto: str = None,
-                 num_bootstraps: int = 100):
+                 num_bootstraps: int = 100,
+                 color_map : str | dict = None
+        ):
         '''
         Create finetuning experiment, where the input is a bag of patch embeddings.
 
@@ -291,6 +294,7 @@ class ExperimentFactory:
             external_split: str, path to local split file for external testing.
             external_saveto: str, path to save the results of external testing. Only needed if external_split is not None.
             num_bootstraps: int, number of bootstraps. Default is 100.
+            color_map : str | dict, label-color dictionary. 
         '''
         assert batch_size == 1, 'Only batch_size = 1 is supported for finetuning for now'
         
@@ -360,6 +364,10 @@ class ExperimentFactory:
         else:
             raise NotImplementedError(f'Optimizer type {optimizer_type} not yet implemented. Please choose from "AdamW" or "gigapath".')
         
+        if isinstance(color_map,str):
+            with open(color_map,"r") as fp:
+                color_map = json.load(fp)
+
         ###### Configure experiment ################################################################
         experiment = FinetuningExperiment(
             task_type = task_info['task_type'],
@@ -375,7 +383,8 @@ class ExperimentFactory:
             num_bootstraps = num_bootstraps,
             precision = slide_encoder.precision,
             device = f'cuda:{gpu if gpu != -1 else GPUManager.get_best_gpu(min_mb=500)}',
-            results_dir = saveto
+            results_dir = saveto,
+            color_map = color_map
         )
         
         if external_split is None:
