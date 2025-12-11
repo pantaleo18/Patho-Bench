@@ -48,7 +48,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                  lr_logging_interval: int = None,
                  seed: int = 7,
                  color_map : dict = None,
-                 early_stop : bool = True,
+                 early_stop : bool = False,
                  patience : int = 3,
                  halt_training_on_folder_early_stop : bool = False,
                  **kwargs):
