@@ -97,7 +97,7 @@ class Pooler:
         Returns:
             cleaned_batch (dict or list[dict]): Cleaned up slide sample or list of slide samples
         '''
-        assert len(sample_collated['id']) == 1, "Batch size must be 1 to be compatible with Trident slide encoders."
+        # assert len(sample_collated['id']) == 1, "Batch size must be 1 to be compatible with Trident slide encoders."
         
         if isinstance(sample_collated['features'], torch.Tensor): # combine_slides_per_patient was set to True when initializing the dataset
             cleaned_sample = {
