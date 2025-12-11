@@ -1,7 +1,6 @@
 import os
 import numpy as np
 import torch
-import torch.nn.functional as F
 import time
 from tqdm import tqdm
 import json
@@ -18,6 +17,8 @@ from patho_bench.experiments.BaseExperiment import BaseExperiment
 from patho_bench.experiments.utils.LoggingMixin import LoggingMixin
 from patho_bench.experiments.utils.ClassificationMixin import ClassificationMixin
 from patho_bench.experiments.utils.SurvivalMixin import SurvivalMixin
+
+import warnings
 
 
 # Turn off tokenizer parallelism to avoid warnings from dataloader
@@ -47,6 +48,8 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                  lr_logging_interval: int = None,
                  seed: int = 7,
                  color_map : dict = None,
+                 early_stop : bool = True,
+                 patience : int = 3,
                  **kwargs):
         """
         Base class for all experiments.
@@ -69,6 +72,8 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             view_progress (str, optional): How to log progress. Can be 'bar' or 'verbose'. Defaults to 'bar'.
             lr_logging_interval (int, optional): Interval at which to log learning rate to dashboard (in number of accumulation steps). Defaults to None (do not log).
             seed (int): Seed for reproducibility.
+            early_stop : bool, halt the training when validation performance stop improving (defualt = True). Use `patience` to regulate it.
+            patience : int, define how many epochs to wait for improvement before stopping (default = 3).
             **kwargs: Additional arguments to save in config.json
         """
         self.task_type = task_type
@@ -90,6 +95,8 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
         self.seed = seed
         self.set_seed(self.seed)
         self.color_map = color_map
+        self.early_stop = early_stop,
+        self.patience = patience
         
         # Set kwargs as extra attributes for saving in config.json
         for key, value in kwargs.items():
@@ -146,6 +153,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                 raise ValueError(f"view_progress must be 'bar' or 'verbose', got {self.view_progress} instead.")
             
             ### Loop through epochs
+            steps_without_improvement = 0
             for self.current_epoch in self.loop:
                 for self.mode in ['train', 'val']:
                     if self.dataloaders[self.mode] is not None:
@@ -153,17 +161,27 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                             self.loop.set_description(f'      Epoch {self.current_epoch} {self.mode}')
 
                         start = time.time()
-                        self._run_single_epoch()
+                        improved = self._run_single_epoch()
                         end = time.time()
-
+                        
                         # Save progress to file
                         with open(os.path.join(self.results_dir, 'progress.txt'), 'a') as f:
                             f.write(f'DONE: Fold {self.current_iter + 1}/{self.dataset.num_folds} | {self.mode} | Epoch {self.current_epoch}\n')
                             
                         if self.view_progress == 'verbose':
                             print(f"Finished epoch = {self.current_epoch} in {end - start:.2f} seconds")
+                        
+                        # Early Stopping
+                        steps_without_improvement += 1 if not improved and self.mode == "val" else 0 # Count or reset.
+                        if steps_without_improvement > self.patience:
+                            warnings.warn(
+                                f"Fold {self.current_iter + 1} stopped at epoch {self.current_epoch} "
+                                f"after {self.patience} epochs without improvement.",
+                                UserWarning
+                            )
+                            break #barbarian, but effective
                             
-        # After we finish all folds, try running a final "validation metrics" pass
+        # After we finish all folds, try running a final "validation metrics" pass (?)
         self.validate()
 
     def test(self):
@@ -306,7 +324,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             summary (dict): Dictionary of summary metrics
         """
         if len(labels_across_folds) > 0:
-            # Perform bootstrapping and calculate 95% CI
+            # Perform bootstrapping and calculate 95% CI (# They do?)
             bootstraps = self.bootstrap(labels_across_folds, preds_across_folds, self.num_bootstraps)
             if self.task_type == 'classification':
                 scores_across_folds = [self.classification_metrics(labels, preds, self.model_kwargs['num_classes'])['overall'] for labels, preds in tqdm(bootstraps, desc=f'Computing {self.num_bootstraps} bootstraps')]
@@ -349,6 +367,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             return os.path.join(checkpoint_dir, available_checkpoints[0])
     
     def _run_single_epoch(self):
+        
         """
         Runs a single training or validation epoch. After the epoch, the epoch metrics are stored in self.current_epoch_metrics.
         """
@@ -367,7 +386,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
         all_losses = []
         all_info = [] # This is additional info returned by the model along with the loss (e.g. predictions, targets, etc.)
         new_best_loss = False
-        new_best_smooth_rank = False
+        new_best_smooth_rank = False #(?)
         num_samples_processed = 0
         num_gradient_steps = 0
 
@@ -461,6 +480,8 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
 
         self.log_loss(self.current_epoch) # Log loss to dashboard on epoch end
         self.log_smooth_rank(self.current_epoch) # Log smooth rank to dashboard on epoch end
+
+        return new_best_loss
     
     def _init_scheduler(self):
         '''

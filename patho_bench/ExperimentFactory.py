@@ -261,11 +261,13 @@ class ExperimentFactory:
                  model_kwargs: dict = {},
                  layer_decay = None,
                  gpu = -1,
-                 batch_size = 1, # Only batch_size = 1 is supported for finetuning for now
+                 batch_size = 1, 
                  external_split: str = None,
                  external_saveto: str = None,
                  num_bootstraps: int = 100,
-                 color_map : str | dict = None
+                 color_map : str | dict = None,
+                 early_stop : bool = True,
+                 patience : int = 3,
         ):
         '''
         Create finetuning experiment, where the input is a bag of patch embeddings.
@@ -295,6 +297,8 @@ class ExperimentFactory:
             external_saveto: str, path to save the results of external testing. Only needed if external_split is not None.
             num_bootstraps: int, number of bootstraps. Default is 100.
             color_map : str | dict, label-color dictionary. 
+            early_stop : bool, halt the training when validation performance stop improving (defualt = True). Use `patience` to regulate it.
+            patience : int, define how many epochs to wait for improvement before stopping (default = 3).
         '''
         assert batch_size == 1, 'Only batch_size = 1 is supported for finetuning for now'
         
@@ -384,7 +388,9 @@ class ExperimentFactory:
             precision = slide_encoder.precision,
             device = f'cuda:{gpu if gpu != -1 else GPUManager.get_best_gpu(min_mb=500)}',
             results_dir = saveto,
-            color_map = color_map
+            color_map = color_map,
+            early_stop = early_stop,
+            patience = patience
         )
         
         if external_split is None:
