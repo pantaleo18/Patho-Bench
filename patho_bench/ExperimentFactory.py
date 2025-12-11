@@ -296,7 +296,7 @@ class ExperimentFactory:
             num_bootstraps: int, number of bootstraps. Default is 100.
             color_map : str | dict, label-color dictionary. 
         '''
-        assert batch_size == 1, 'Only batch_size = 1 is supported for finetuning for now'
+        # assert batch_size == 1, 'Only batch_size = 1 is supported for finetuning for now'
         
         ###### Get dataset ################################################################
         split, task_info, internal_dataset = ExperimentFactory._prepare_internal_dataset(split_path=split,
