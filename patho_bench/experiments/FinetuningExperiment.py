@@ -191,8 +191,9 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
 
             if self.early_stop and early_stop_triggered and self.halt_training_on_folder_early_stop:
                 warnings.warn(
-                    f"Aborting training procedure not yet implemented. The process will continue with the next folder"
+                    f"Halting training procedure"
                 )
+                break
                             
         # After we finish all folds, try running a final "validation metrics" pass
         self.validate()
