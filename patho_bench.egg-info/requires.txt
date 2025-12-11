@@ -1,0 +1,11 @@
+threadpoolctl
+scikit-learn
+scikit-survival
+lovely-tensors
+seaborn
+datasets==3.6.0
+
+[dev]
+pytest
+black
+mypy
