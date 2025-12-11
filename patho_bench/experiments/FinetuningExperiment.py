@@ -50,6 +50,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                  color_map : dict = None,
                  early_stop : bool = True,
                  patience : int = 3,
+                 halt_training_on_folder_early_stop : bool = False,
                  **kwargs):
         """
         Base class for all experiments.
@@ -97,6 +98,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
         self.color_map = color_map
         self.early_stop = early_stop,
         self.patience = patience
+        self.halt_training_on_folder_early_stop = halt_training_on_folder_early_stop
         
         # Set kwargs as extra attributes for saving in config.json
         for key, value in kwargs.items():
@@ -113,7 +115,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
         print(f'\nExperiment dir: {self.results_dir}')
         self.save_config(os.path.join(self.results_dir, 'config.json'))
         self.train_results_dir = self.results_dir  # Store a copy of the training results dir for loading model in self.test(), in case want to save test results in a different directory
-
+        
         ### Loop through folds
         for self.current_iter in range(self.dataset.num_folds):
             
@@ -154,7 +156,10 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             
             ### Loop through epochs
             steps_without_improvement = 0
+            early_stop_triggered = False
+            
             for self.current_epoch in self.loop:
+                
                 for self.mode in ['train', 'val']:
                     if self.dataloaders[self.mode] is not None:
                         if self.view_progress == 'bar':
@@ -172,16 +177,24 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                             print(f"Finished epoch = {self.current_epoch} in {end - start:.2f} seconds")
                         
                         # Early Stopping
-                        steps_without_improvement += 1 if not improved and self.mode == "val" else 0 # Count or reset.
-                        if steps_without_improvement > self.patience:
-                            warnings.warn(
-                                f"Fold {self.current_iter + 1} stopped at epoch {self.current_epoch} "
-                                f"after {self.patience} epochs without improvement.",
-                                UserWarning
-                            )
-                            break #barbarian, but effective
+                        if self.early_stop: 
+                            steps_without_improvement += 1 if not improved and self.mode == "val" else 0 # Count or reset.
+                            if steps_without_improvement > self.patience:
+                                warnings.warn(
+                                    f"It's been {self.current_epoch} epochs a new best validation loss is not being found",
+                                    UserWarning
+                                )
+                                early_stop_triggered = True
+                
+                if early_stop_triggered and self.early_stop:
+                    break
+
+            if self.early_stop and early_stop_triggered and self.halt_training_on_folder_early_stop:
+                warnings.warn(
+                    f"Aborting training procedure not yet implemented. The process will continue with the next folder"
+                )
                             
-        # After we finish all folds, try running a final "validation metrics" pass (?)
+        # After we finish all folds, try running a final "validation metrics" pass
         self.validate()
 
     def test(self):
@@ -205,7 +218,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
         all_preds_across_folds = []
         all_scores_across_folds = []
 
-        ### Loop through folds
+        ### Loop through folds which have been computed.
         loop = tqdm(range(self.dataset.num_folds))
         for self.current_iter in loop:
             ### Load the dataloader for this fold
@@ -216,12 +229,20 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
 
             ### Get latest saved checkpoint for this fold
             checkpoint_dir = os.path.join(self.results_dir, 'checkpoints', f'fold_{self.current_iter}')
-            ckpt_path = self._pick_checkpoint(checkpoint_dir)
+            try:
+                ckpt_path = self._pick_checkpoint(checkpoint_dir)
+            except FileNotFoundError:
+                warnings.warn(f"No checkpoint found for fold {self.current_iter + 1}. Skipping this fold for {split} evaluation.")
+                continue
 
             ### Load the model and freeze it
-            model = self.model_constructor(**self.model_kwargs, device=self.device)
-            model = self.load_checkpoint(model, ckpt_path)
-            model = self.freeze(model)
+            try:
+                model = self.model_constructor(**self.model_kwargs, device=self.device)
+                model = self.load_checkpoint(model, ckpt_path)
+                model = self.freeze(model)
+            except Exception as e:
+                warnings.warn(f"Failed to load checkpoint for fold {self.current_iter + 1}: {e}. Skipping this fold.")
+                continue
 
             ### Gather labels and predictions
             labels, preds = self._accumulate_preds(eval_dataloader, model)

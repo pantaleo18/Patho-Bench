@@ -266,8 +266,9 @@ class ExperimentFactory:
                  external_saveto: str = None,
                  num_bootstraps: int = 100,
                  color_map : str | dict = None,
-                 early_stop : bool = True,
+                 early_stop : bool = False,
                  patience : int = 3,
+                 halt_training_on_folder_early_stop : bool = False
         ):
         '''
         Create finetuning experiment, where the input is a bag of patch embeddings.
@@ -390,7 +391,8 @@ class ExperimentFactory:
             results_dir = saveto,
             color_map = color_map,
             early_stop = early_stop,
-            patience = patience
+            patience = patience,
+            halt_training_on_folder_early_stop=halt_training_on_folder_early_stop
         )
         
         if external_split is None:
