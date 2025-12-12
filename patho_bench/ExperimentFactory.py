@@ -265,7 +265,8 @@ class ExperimentFactory:
                  external_split: str = None,
                  external_saveto: str = None,
                  num_bootstraps: int = 100,
-                 color_map : str | dict = None
+                 color_map : str | dict = None,
+                 lr_logging_interval : int = 1,
         ):
         '''
         Create finetuning experiment, where the input is a bag of patch embeddings.
@@ -295,6 +296,7 @@ class ExperimentFactory:
             external_saveto: str, path to save the results of external testing. Only needed if external_split is not None.
             num_bootstraps: int, number of bootstraps. Default is 100.
             color_map : str | dict, label-color dictionary. 
+            lr_logging_interval : int, Marica Vagni added: ensure LR gets logged
         '''
         assert batch_size == 1, 'Only batch_size = 1 is supported for finetuning for now'
         
@@ -385,7 +387,7 @@ class ExperimentFactory:
             device = f'cuda:{gpu if gpu != -1 else GPUManager.get_best_gpu(min_mb=500)}',
             results_dir = saveto,
             color_map = color_map,
-            lr_logging_interval = 1,  # Marica Vagni added: ensure LR gets logged
+            lr_logging_interval = lr_logging_interval,  
         )
         
         if external_split is None:
@@ -421,7 +423,9 @@ class ExperimentFactory:
               external_split: str = None,
               external_pooled_embeddings_dir: str = None,
               external_saveto: str = None,
-              num_bootstraps: int = 100):
+              num_bootstraps: int = 100,
+              color_map : str | dict = None,
+              lr_logging_interval = 1):
         '''
         Run a hyperparameter sweep for a given experiment configuration.
 
@@ -455,7 +459,9 @@ class ExperimentFactory:
             'external_split': external_split,
             'external_pooled_embeddings_dir': external_pooled_embeddings_dir,
             'external_saveto': external_saveto,
-            'num_bootstraps': num_bootstraps            
+            'num_bootstraps': num_bootstraps,
+            'color_map' : color_map,
+            'lr_logging_interval' : lr_logging_interval            
         }
 
         # Iterate over all combinations of hyperparameters.
