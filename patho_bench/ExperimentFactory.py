@@ -343,7 +343,7 @@ class ExperimentFactory:
         elif scheduler_type == 'cosine':
             scheduler_config = {'type': 'cosine',
                                 'eta_min': 1e-8,
-                                'step_on': 'accumulation-step'}
+                                'step_on': 'epoch'}  #Marica Vagni changed from accumulation-step to epoch
         else:
             raise NotImplementedError(f'Scheduler type {scheduler_type} not yet implemented. Please choose from "cosine" or "gigapath".')
 
@@ -384,7 +384,8 @@ class ExperimentFactory:
             precision = slide_encoder.precision,
             device = f'cuda:{gpu if gpu != -1 else GPUManager.get_best_gpu(min_mb=500)}',
             results_dir = saveto,
-            color_map = color_map
+            color_map = color_map,
+            lr_logging_interval = 1,  # Marica Vagni added: ensure LR gets logged
         )
         
         if external_split is None:

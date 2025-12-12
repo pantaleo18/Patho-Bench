@@ -91,9 +91,9 @@ class BaseExperiment(ConfigMixin):
             se = std / np.sqrt(len(all_scores_across_folds))
             summary[key] = {
                 'mean': mean,
-                # 'std': std,
+                'std': std,  #MV added because it can be useful 
                 'se': se,
-                'formatted': f'{mean:.3f} ± {se:.3f}'
+                'formatted': f'{mean:.3f} ± {std:.3f} ± {se:.3f}'
             }
 
         return summary

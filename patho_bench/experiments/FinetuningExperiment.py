@@ -6,6 +6,7 @@ import time
 from tqdm import tqdm
 import json
 import warnings
+import math  # MV added
 
 # Import optimizers
 from torch.optim import Adam
@@ -125,6 +126,13 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             self.optimizer = self._init_optimizer()
             self.scheduler = self._init_scheduler()
 
+            self.global_opt_step = 0  # MV added: global optimizer-step counter. LR plot
+            # og initial LR at step 0 so plots start at the true initial value # MV added
+            if self.lr_logging_interval is not None: # MV added
+                if not hasattr(self, "mode"):  # MV added
+                    self.mode = "train"  # ensure a label for the LR line  # MV added
+                self.log_lr(0)  # MV added
+
             ### Prepare grad scaler
             # Only use GradScaler for FP16 training. bfloat16 does not require GradScaler: https://discuss.pytorch.org/t/bfloat16-training-explicit-cast-vs-autocast/202618/8
             try:
@@ -206,7 +214,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             model = self.freeze(model)
 
             ### Gather labels and predictions
-            labels, preds = self._accumulate_preds(eval_dataloader, model)
+            labels, preds, ids = self._accumulate_preds(eval_dataloader, model)  # MV: ids added for downstream analyses
 
             ### Decide whether to report per-fold results (mean ± SD) or bootstrapped results (95% CI)
             if len(eval_dataloader.dataset) == 1 or self.dataset.num_folds == 1:
@@ -217,6 +225,10 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                 # If multiple folds and multiple samples per fold, save per-fold results
                 per_fold_save_dir = os.path.join(self.results_dir, f'{split}_metrics', f'fold_{self.current_iter}')
                 scores = self._compute_metrics(labels, preds, per_fold_save_dir)
+                all_scores_across_folds.append(scores)
+
+                os.makedirs(per_fold_save_dir, exist_ok=True)  # MV added
+                scores = self._compute_metrics(labels, preds, per_fold_save_dir, ids=ids)  # MV ids added
                 all_scores_across_folds.append(scores)
 
         # After collecting all folds, either do bootstrapping or an average across folds
@@ -236,9 +248,18 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
         """
         labels_all = []
         preds_all = []
+        ids_all = []
 
         with torch.inference_mode(), torch.autocast(device_type='cuda', dtype=self.precision, enabled=self.precision != torch.float32):
             for batch in dataloader:
+                # MV: added 6 lines below to save the ids of the predictions for further analyses
+                raw_ids = batch.get('ids', None)
+                if isinstance(raw_ids, (list, tuple, np.ndarray)):
+                    batch_ids = [str(x) for x in raw_ids]
+                else:
+                    batch_ids = [str(raw_ids)] if raw_ids is not None else ["UNKNOWN"]
+                ids_all.extend(batch_ids)
+
                 if self.task_type == 'classification':
                     label = batch['labels'][self.model_kwargs['task_name']].cpu().int().numpy().tolist()[0]
                     logits = model(batch, output='logits') # Forward pass
@@ -261,9 +282,9 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             labels_all = {k: np.array([v[k][0] for v in labels_all]) for k in labels_all[0].keys()}
             preds_all = np.array(preds_all)
 
-        return labels_all, preds_all
+        return labels_all, preds_all, ids_all
     
-    def _compute_metrics(self, labels, preds, save_dir):
+    def _compute_metrics(self, labels, preds, save_dir, ids=None):  # MV ids added
         """
         Save metrics to file and return a dictionary of metrics.
         
@@ -271,7 +292,6 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             labels (np.array or dict): Ground truth labels
             preds (np.array): Predictions
             save_dir (str): Directory to save metrics to
-            label_dict (dict, optional): Mapping from integer codes to original label names
         """
         if self.task_type == 'classification':
             self.auc_roc(labels, preds, self.model_kwargs['num_classes'], 
@@ -286,10 +306,25 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             scores = self.classification_metrics(labels, preds, self.model_kwargs['num_classes'], 
                                                 saveto=os.path.join(save_dir, "metrics.json"),
                                                 label_dict=self.model_kwargs['label_dict'])
+            np.savez_compressed(  # MV ADDED: Save labels and preds and ids together as a single .npz file
+                os.path.join(save_dir, "labels_preds.npz"),
+                labels=np.array([labels], dtype=object),
+                preds=np.array([preds], dtype=object),
+                ids=np.array([ids], dtype=object) if ids is not None else np.array([None], dtype=object),
+            )
             return scores['overall']
+        
         elif self.task_type == 'survival':
-            scores = self.survival_metrics(labels['survival_event'], labels['survival_time'], 
-                                        preds, saveto=os.path.join(save_dir, "metrics.json"))
+            scores = self.survival_metrics(labels['survival_event'], labels['survival_time'], preds, saveto = os.path.join(save_dir, "metrics.json"))
+            # Optional MV added, functionality not checked yet: also store ids if present
+            if ids is not None:
+                np.savez_compressed(
+                    os.path.join(save_dir, "labels_preds.npz"),
+                    ids=np.array([ids], dtype=object),
+                    survival_event=np.array([labels['survival_event']], dtype=object),
+                    survival_time=np.array([labels['survival_time']], dtype=object),
+                    risks=np.array([preds], dtype=object),
+                )
             return scores
 
     def _finalize_metrics(self, split, labels_across_folds, preds_across_folds, scores_across_folds):
@@ -357,6 +392,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
         if self.mode == 'train':
             self.model.train()
             context_manager = torch.enable_grad()
+            self.optimizer.zero_grad(set_to_none=True)  # MV add for gradient accumulation > 1
         elif self.mode in ['val']:
             self.model.eval()
             context_manager = torch.inference_mode()
@@ -370,6 +406,8 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
         new_best_smooth_rank = False
         num_samples_processed = 0
         num_gradient_steps = 0
+
+        total_batches = len(self.dataloaders[self.mode])  #MV added
 
         # Loop over each batch in loader
         with context_manager:
@@ -397,15 +435,16 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                         num_gradient_steps += 1
 
                         # Log learning rate to dashboard on every lr_logging_interval accumulation steps
-                        if self.scheduler_config and self.lr_logging_interval is not None and num_gradient_steps % self.lr_logging_interval == 0:
-                            self.log_lr(batch_idx + self.current_epoch * len(self.dataloaders[self.mode]))                        
+                        # if self.scheduler_config and self.lr_logging_interval is not None and num_gradient_steps % self.lr_logging_interval == 0:
+                        #     self.log_lr(batch_idx + self.current_epoch * len(self.dataloaders[self.mode]))                        
 
                         # Update scheduler on accumulation step if step_on is 'accumulation-step'
                         if self.scheduler_config and self.scheduler_config['step_on'] == 'accumulation-step' and not optimizer_skipped:
                             try:
                                 # API for custom LR scheduler
-                                partial_epoch_progress = (batch_idx + 1) / len(self.dataloaders[self.mode])
-                                self.scheduler.step(total_progress = (self.current_epoch + partial_epoch_progress) / self.num_epochs)
+                                # partial_epoch_progress = (batch_idx + 1) / len(self.dataloaders[self.mode])  # MV commented
+                                # self.scheduler.step(total_progress = (self.current_epoch + partial_epoch_progress) / self.num_epochs)  # MV commented
+                                self.scheduler.step()  #MV added
                             except:
                                 try:
                                     # Default API for built-in LR schedulers
@@ -421,6 +460,23 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                     self.loop.set_postfix(num_batches = f'{batch_idx + 1}/{len(self.dataloaders[self.mode])}',
                                         num_samples = num_samples_processed,
                                         avg_loss = f'{(sum(all_losses)/num_gradient_steps):.4f}')
+
+        # -------- flush remainder (last partial window) --------  MV added
+        if self.mode == 'train':
+            remainder = total_batches % self.accumulation_steps
+            if remainder != 0:
+                self.grad_scaler.step(self.optimizer)
+                current_scale = self.grad_scaler.get_scale()
+                self.grad_scaler.update()
+                optimizer_skipped = (self.grad_scaler.get_scale() < current_scale)
+                self.optimizer.zero_grad(set_to_none=True)
+                num_gradient_steps += 1
+
+                if self.scheduler_config and self.scheduler_config.get('step_on') == 'accumulation-step' and not optimizer_skipped:
+                    try:
+                        self.scheduler.step()
+                    except:
+                        self.scheduler.step(total_progress=(self.current_epoch + 1) / self.num_epochs)
 
         # Update scheduler at end of epoch if step_on is 'epoch'
         if self.mode == 'train' and self.scheduler_config and self.scheduler_config['step_on'] == 'epoch' and not optimizer_skipped:
@@ -481,7 +537,6 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                     step_size=self.scheduler_config['step_size'],
                     gamma=self.scheduler_config['gamma'])
             elif self.scheduler_config['type'] == 'cosine':
-                assert self.accumulation_steps == 1, "CosineAnnealingLR scheduler is not compatible with gradient accumulation."
                 return torch.optim.lr_scheduler.CosineAnnealingLR(
                     self.optimizer,
                     T_max=self.num_epochs if self.scheduler_config['step_on'] == 'epoch' else len(self.dataloaders['train']) * self.num_epochs,

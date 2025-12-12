@@ -34,7 +34,6 @@ class ClassificationMixin:
         ax.set_ylabel("True Positive Rate", fontsize=14)
         ax.set_title(f"ROC Curve ({num_classes} classes)", fontsize=16, pad=20)
         ax.legend(loc="lower right", frameon=False, fontsize=12)
-
         fig.tight_layout()
         if saveto is not None:
             os.makedirs(os.path.dirname(saveto), exist_ok=True)
