@@ -121,10 +121,12 @@ class PatchEmbeddingsDataset(BaseDataset):
         assets = []
         attributes = [] # Attributes of each slide
         for slide_id in slide_ids:
+            # print(slide_id)  # MV for checks
             if slide_id not in self.available_slide_paths:
                 raise ValueError(f"Slide {slide_id} not found in {self.load_from}.")
             
             data, attrs = self.load_h5(self.available_slide_paths[slide_id], keys = ['features', 'coords'])
+            # print(f"Initial number of patches: {data['coords'].shape[0]}")  # MV for checks
             assets.append(data)
             attributes.append({
                 # Only collecting patch_size_level0 for now, but could collect other attributes in the future depending on what is needed by the pooling model
@@ -150,7 +152,7 @@ class PatchEmbeddingsDataset(BaseDataset):
                 if self.bag_size is not None or self.shuffle:
                     assets[i] = self._sample_dict_of_lists(slide_assets)
             assets = self._collate_slides(assets, method = 'list') # Now a dict[list[tensor]]
-            
+        # print(f"Final number of patches in a bag: {assets['coords'][0].shape[0]}")    
         assets.update({'id': sample_id, # str
                        'paths': [self.available_slide_paths[slide_id] for slide_id in slide_ids], # list[str], paths to patch features h5 for each slide
                        'attributes': attributes # dict or list[dict]

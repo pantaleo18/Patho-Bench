@@ -136,6 +136,9 @@ class ClassificationMixin:
         # Compute overall metrics
         if num_classes == 2:
             preds = preds[:, 1]  # Only use column for positive class
+
+            # tn, fp, _, _ = confusion_matrix(y_true, preds).ravel()  #MV
+            # specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0  #MV
         
         try:
             macro_ovr_auc = roc_auc_score(y_true, preds, average="macro", multi_class="ovr", labels = list(range(num_classes)))

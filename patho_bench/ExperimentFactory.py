@@ -61,16 +61,16 @@ class ExperimentFactory:
             model_kwargs: dict, additional arguments to pass to the model constructor. Only needed if pooled_embeddings_dir is empty.
             num_bootstraps: int, number of bootstraps. Default is 100.
         '''
-        _, task_info, internal_dataset = ExperimentFactory._prepare_internal_dataset(split_path=split,
-                                                                                    task_config=task_config,
-                                                                                    saveto=saveto,
-                                                                                    combine_slides_per_patient=combine_slides_per_patient,
-                                                                                    combine_train_val=COMBINE_TRAIN_VAL,
-                                                                                    patch_embeddings_dirs=patch_embeddings_dirs,
-                                                                                    pooled_embeddings_dir=pooled_embeddings_dir,
-                                                                                    model_name=model_name,
-                                                                                    model_kwargs=model_kwargs,
-                                                                                    gpu=gpu)
+        _, task_info, internal_dataset = ExperimentFactory._prepare_internal_dataset(split,
+                                                                                    task_config,
+                                                                                    saveto,
+                                                                                    combine_slides_per_patient,
+                                                                                    COMBINE_TRAIN_VAL,
+                                                                                    patch_embeddings_dirs,
+                                                                                    pooled_embeddings_dir,
+                                                                                    model_name,
+                                                                                    model_kwargs,
+                                                                                    gpu)
         
         # Initialize experiment
         experiment = LinearProbeExperiment(
@@ -134,16 +134,16 @@ class ExperimentFactory:
             model_kwargs: dict, additional arguments to pass to the model constructor. Only needed if pooled_embeddings_dir is empty.
             num_bootstraps: int, number of bootstraps. Default is 100.
         '''
-        _, task_info, internal_dataset = ExperimentFactory._prepare_internal_dataset(split_path=split,
-                                                                                    task_config=task_config,
-                                                                                    saveto=saveto,
-                                                                                    combine_slides_per_patient=combine_slides_per_patient,
-                                                                                    combine_train_val=COMBINE_TRAIN_VAL,
-                                                                                    patch_embeddings_dirs=patch_embeddings_dirs,
-                                                                                    pooled_embeddings_dir=pooled_embeddings_dir,
-                                                                                    model_name=model_name,
-                                                                                    model_kwargs=model_kwargs,
-                                                                                    gpu=gpu)
+        _, task_info, internal_dataset = ExperimentFactory._prepare_internal_dataset(split,
+                                                                                    task_config,
+                                                                                    saveto,
+                                                                                    combine_slides_per_patient,
+                                                                                    COMBINE_TRAIN_VAL,
+                                                                                    patch_embeddings_dirs,
+                                                                                    pooled_embeddings_dir,
+                                                                                    model_name,
+                                                                                    model_kwargs,
+                                                                                    gpu)
         
         # Initialize experiment
         experiment = RetrievalExperiment(
@@ -206,16 +206,16 @@ class ExperimentFactory:
             model_kwargs: dict, additional arguments to pass to the model constructor. Only needed if pooled_embeddings_dir is empty.
             num_bootstraps: int, number of bootstraps. Default is 100.
         '''
-        _, task_info, internal_dataset = ExperimentFactory._prepare_internal_dataset(split_path=split,
-                                                                                    task_config=task_config,
-                                                                                    saveto=saveto,
-                                                                                    combine_slides_per_patient=combine_slides_per_patient,
-                                                                                    combine_train_val=COMBINE_TRAIN_VAL,
-                                                                                    patch_embeddings_dirs=patch_embeddings_dirs,
-                                                                                    pooled_embeddings_dir=pooled_embeddings_dir,
-                                                                                    model_name=model_name,
-                                                                                    model_kwargs=model_kwargs,
-                                                                                    gpu=gpu)
+        _, task_info, internal_dataset = ExperimentFactory._prepare_internal_dataset(split,
+                                                                                    task_config,
+                                                                                    saveto,
+                                                                                    combine_slides_per_patient,
+                                                                                    COMBINE_TRAIN_VAL,
+                                                                                    patch_embeddings_dirs,
+                                                                                    pooled_embeddings_dir,
+                                                                                    model_name,
+                                                                                    model_kwargs,
+                                                                                    gpu)
         
         # Initialize experiment
         experiment = CoxNetExperiment(
@@ -295,14 +295,13 @@ class ExperimentFactory:
         assert batch_size == 1, 'Only batch_size = 1 is supported for finetuning for now'
         
         ###### Get dataset ################################################################
-        split, task_info, internal_dataset = ExperimentFactory._prepare_internal_dataset(split_path=split,
-                                                                                    task_config=task_config,
-                                                                                    saveto=saveto,
-                                                                                    combine_slides_per_patient=combine_slides_per_patient,
-                                                                                    combine_train_val=COMBINE_TRAIN_VAL,
-                                                                                    patch_embeddings_dirs=patch_embeddings_dirs,
-                                                                                    gpu=gpu,
-                                                                                    bag_size=bag_size)
+        split, task_info, internal_dataset = ExperimentFactory._prepare_internal_dataset(split,
+                                                                                    task_config,
+                                                                                    saveto,
+                                                                                    combine_slides_per_patient,
+                                                                                    COMBINE_TRAIN_VAL,
+                                                                                    patch_embeddings_dirs,
+                                                                                    bag_size = bag_size)
         
         task_name = task_info['task_col']
 
@@ -338,7 +337,7 @@ class ExperimentFactory:
         elif scheduler_type == 'cosine':
             scheduler_config = {'type': 'cosine',
                                 'eta_min': 1e-8,
-                                'step_on': 'accumulation-step'}
+                                'step_on': 'epoch'}  #Marica Vagni changed from accumulation-step to epoch
         else:
             raise NotImplementedError(f'Scheduler type {scheduler_type} not yet implemented. Please choose from "cosine" or "gigapath".')
 
@@ -374,7 +373,8 @@ class ExperimentFactory:
             num_bootstraps = num_bootstraps,
             precision = slide_encoder.precision,
             device = f'cuda:{gpu if gpu != -1 else GPUManager.get_best_gpu(min_mb=500)}',
-            results_dir = saveto
+            results_dir = saveto,
+            lr_logging_interval = 1,  # Marica Vagni added: ensure LR gets logged
         )
         
         if external_split is None:
