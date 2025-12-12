@@ -425,7 +425,7 @@ class ExperimentFactory:
               external_saveto: str = None,
               num_bootstraps: int = 100,
               color_map : str | dict = None,
-              lr_logging_interval = 1):
+              lr_logging_interval : int = 1):
         '''
         Run a hyperparameter sweep for a given experiment configuration.
 
