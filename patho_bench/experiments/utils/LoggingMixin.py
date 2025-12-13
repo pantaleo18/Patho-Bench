@@ -22,7 +22,6 @@ Methods:
     get_checkpoint_path_for_current_fold(how): Gets the desired checkpoint path for the current fold.
 """
 
-
 class LoggingMixin:
     def compute_extra_metrics(self):
         '''
@@ -64,7 +63,7 @@ class LoggingMixin:
             self.current_epoch_metrics (dict): Dictionary of metrics for this epoch {'loss': loss, 'outputs': outputs, 'extra_metric_1': extra_metric_1, ...}
             self.mode (str): Mode of operation, either 'train', 'val', or '
         '''
-        self.loggers['loss'].step({self.mode: self.current_epoch_metrics['per_sample_loss']}, step)
+        self.loggers['loss'].step({self.mode: self.current_epoch_metrics['avg_loss']}, step)
 
     def log_smooth_rank(self, step):
         '''

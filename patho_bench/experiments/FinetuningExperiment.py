@@ -49,6 +49,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                  seed: int = 7,
                  color_map : dict = None,
                  early_stop : bool = False,
+                 early_stop_policy : str = "best-val-err",
                  patience : int = 3,
                  halt_training_on_folder_early_stop : bool = False,
                  **kwargs):
@@ -96,7 +97,8 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
         self.seed = seed
         self.set_seed(self.seed)
         self.color_map = color_map
-        self.early_stop = early_stop,
+        self.early_stop = early_stop
+        self.early_stop_policy = early_stop_policy
         self.patience = patience
         self.halt_training_on_folder_early_stop = halt_training_on_folder_early_stop
         
@@ -119,6 +121,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
         ### Loop through folds
         for self.current_iter in range(self.dataset.num_folds):
             
+            # FOR THE CURRENT FOLD
             print("############################################################################################################")
             print(f"Training: Fold {self.current_iter + 1} of {self.dataset.num_folds}...")
             self.loggers = self.init_loggers(save_dir = os.path.join(self.results_dir, 'training_metrics', f'fold_{self.current_iter}'))
@@ -143,8 +146,8 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                 self.grad_scaler = torch.cuda.amp.GradScaler(enabled = (self.precision == torch.float16))
 
             ### Initialize best loss and rank
-            self.best_val_loss = 1e4            # Initialize to large number
-            self.best_smooth_rank = 0           # Initialize to 0
+            self.best_val_loss = float('inf')    # Initialize to large number
+            self.best_smooth_rank = 0            # Initialize to 0
 
             ### Prepare epoch loop
             if self.view_progress == 'bar':
@@ -154,19 +157,29 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             else:
                 raise ValueError(f"view_progress must be 'bar' or 'verbose', got {self.view_progress} instead.")
             
-            ### Loop through epochs
-            steps_without_improvement = 0
-            early_stop_triggered = False
+            
+            impatient_counter = 0
+            prev_gen_error = float('inf') 
+            early_stop_trigger = False
             
             for self.current_epoch in self.loop:
-                
+
+                # epoch = 0,1,...,num_epochs
+                epoch_loss = {'train' : None, 'val' : None }
+                new_best_loss = {'train' : None, 'val' : None}
+
                 for self.mode in ['train', 'val']:
+                # ON BOTH SPLITS OF THIS DEVELOPMENT FOLDER
                     if self.dataloaders[self.mode] is not None:
+                        
+                        # Progresses
                         if self.view_progress == 'bar':
                             self.loop.set_description(f'      Epoch {self.current_epoch} {self.mode}')
 
+                        # Epoch core
                         start = time.time()
-                        improved = self._run_single_epoch()
+                        new_best_loss[self.mode], epoch_loss[self.mode] = \
+                            self._run_single_epoch()
                         end = time.time()
                         
                         # Save progress to file
@@ -175,24 +188,27 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                             
                         if self.view_progress == 'verbose':
                             print(f"Finished epoch = {self.current_epoch} in {end - start:.2f} seconds")
-                        
-                        # Early Stopping
-                        if self.early_stop: 
-                            steps_without_improvement += 1 if not improved and self.mode == "val" else 0 # Count or reset.
-                            if steps_without_improvement > self.patience:
-                                warnings.warn(
-                                    f"It's been {self.current_epoch} epochs a new best validation loss is not being found",
-                                    UserWarning
-                                )
-                                early_stop_triggered = True
                 
-                if early_stop_triggered and self.early_stop:
-                    break
 
-            if self.early_stop and early_stop_triggered and self.halt_training_on_folder_early_stop:
-                warnings.warn(
-                    f"Halting training procedure"
-                )
+                if self.early_stop:
+                    # Update or reset the counter
+                    if self.early_stop_policy == "best-val-loss":
+                        impatient_counter  = impatient_counter + 1 if not new_best_loss['val'] else 0
+
+                    elif self.early_stop_policy == "generalizzation-error":
+                        current_gen_err = epoch_loss['val'] - epoch_loss['train']
+                        impatient_counter = impatient_counter + 1 if current_gen_err > prev_gen_error else 0
+                        prev_gen_error = current_gen_err
+                    
+                    early_stop_trigger = impatient_counter >= self.patience
+                    if early_stop_trigger:
+                        warnings.warn(f"Early stop criteria ({self.early_stop_policy}) met.")
+                        break
+                
+            # DANGEROUS AND PLANNED TO BE DEPRECATED: stops the whole training if this condition
+            # is met.
+            if self.early_stop and early_stop_trigger and self.halt_training_on_folder_early_stop:
+                warnings.warn(f"Halting training procedure on folder {self.current_epoch}")
                 break
                             
         # After we finish all folds, try running a final "validation metrics" pass
@@ -468,7 +484,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             self.scheduler.step()
 
         # Save current epoch metrics
-        self.current_epoch_metrics = {"loss": all_losses, "info": all_info, 'per_sample_loss': sum(all_losses)/num_gradient_steps}
+        self.current_epoch_metrics = {"loss": all_losses, "info": all_info, 'avg_loss': sum(all_losses)/num_gradient_steps}
         self.compute_extra_metrics()
 
         # Update best smooth rank
@@ -503,12 +519,14 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
         self.log_loss(self.current_epoch) # Log loss to dashboard on epoch end
         self.log_smooth_rank(self.current_epoch) # Log smooth rank to dashboard on epoch end
 
-        return new_best_loss
+        return new_best_loss, self.current_epoch['avg_loss']
     
     def _init_scheduler(self):
+        
         '''
         Returns a scheduler. Supports one of the built-in schedulers or a custom scheduler class.
         '''
+        
         if isinstance(self.scheduler_config['type'], str):
             # Using built-in scheduler
             if self.scheduler_config['type'] == 'plateau':

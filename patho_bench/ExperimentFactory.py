@@ -265,8 +265,10 @@ class ExperimentFactory:
                  external_split: str = None,
                  external_saveto: str = None,
                  num_bootstraps: int = 100,
+                 view_progress: str = 'bar',
                  color_map : str | dict = None,
                  early_stop : bool = False,
+                 early_stop_policy : str = "best-val-loss",
                  patience : int = 3,
                  halt_training_on_folder_early_stop : bool = False
         ):
@@ -389,8 +391,10 @@ class ExperimentFactory:
             precision = slide_encoder.precision,
             device = f'cuda:{gpu if gpu != -1 else GPUManager.get_best_gpu(min_mb=500)}',
             results_dir = saveto,
+            view_progress = view_progress,
             color_map = color_map,
             early_stop = early_stop,
+            early_stop_policy=early_stop_policy,
             patience = patience,
             halt_training_on_folder_early_stop=halt_training_on_folder_early_stop
         )
@@ -412,7 +416,7 @@ class ExperimentFactory:
                 test_external_only=TEST_EXTERNAL_ONLY,
                 saveto=external_saveto
             )
-    
+
     @staticmethod
     def sweep(experiment_type: str,
               split: str,
@@ -428,7 +432,14 @@ class ExperimentFactory:
               external_split: str = None,
               external_pooled_embeddings_dir: str = None,
               external_saveto: str = None,
-              num_bootstraps: int = 100):
+              num_bootstraps: int = 100,
+              view_progress: str = 'bar',
+              color_map : str | dict = None,
+              early_stop : bool = False,
+              early_stop_policy : str = "best-val-loss",
+              patience : int = 3,
+              halt_training_on_folder_early_stop : bool = False
+            ):
         '''
         Run a hyperparameter sweep for a given experiment configuration.
 
@@ -459,6 +470,7 @@ class ExperimentFactory:
             'patch_embeddings_dirs': patch_embeddings_dirs,
             'model_name': model_name,
             'model_kwargs': model_kwargs,
+            'view_progess' : view_progress,
             'external_split': external_split,
             'external_pooled_embeddings_dir': external_pooled_embeddings_dir,
             'external_saveto': external_saveto,
