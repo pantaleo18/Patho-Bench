@@ -491,9 +491,6 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                                 self.scheduler.step()
                             except:
                                 raise Exception(f"Error stepping scheduler on accumulation-step.")
-                else:
-                    if (batch_idx + 1) % self.accumulation_steps == 0:
-                        num_gradient_steps += 1
 
                 # Update progress bar
                 if self.view_progress == 'bar' and (batch_idx + 1) % self.accumulation_steps == 0:
