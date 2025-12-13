@@ -519,7 +519,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
         self.log_loss(self.current_epoch) # Log loss to dashboard on epoch end
         self.log_smooth_rank(self.current_epoch) # Log smooth rank to dashboard on epoch end
 
-        return new_best_loss, self.current_epoch['avg_loss']
+        return new_best_loss, self.current_epoch_metrics['avg_loss']
     
     def _init_scheduler(self):
         
