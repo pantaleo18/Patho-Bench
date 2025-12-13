@@ -97,7 +97,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
         self.seed = seed
         self.set_seed(self.seed)
         self.color_map = color_map
-        self.early_stop = early_stop,
+        self.early_stop = early_stop
         self.patience = patience
         self.halt_training_on_folder_early_stop = halt_training_on_folder_early_stop
         
@@ -458,7 +458,8 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                 num_samples_processed += len(batch['ids'])
                 with torch.autocast(device_type='cuda', dtype=self.precision, enabled=self.precision != torch.float32):
                     loss, info = self.model(batch, output='loss')
-                    loss = loss / self.accumulation_steps
+                    loss_for_backward = loss / self.accumulation_steps
+                    # loss = loss / self.accumulation_steps
                     assert isinstance(loss, torch.Tensor), f"Loss must be a tensor, got {loss} instead"
                     assert isinstance(info, list), f"Info must be a list on CPU, got {info} instead"
 
@@ -468,7 +469,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
 
                 # Backward pass if training (note that this is done outside autocast context manager)
                 if self.mode == 'train':
-                    self.grad_scaler.scale(loss).backward()
+                    self.grad_scaler.scale(loss_for_backward).backward()
                     if (batch_idx + 1) % self.accumulation_steps == 0:
                         self.grad_scaler.step(self.optimizer)
                         current_scale = self.grad_scaler.get_scale()
@@ -476,7 +477,13 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                         optimizer_skipped = (self.grad_scaler.get_scale() < current_scale) # If optimizer step was skipped due to gradient overflow, then scale will be reduced. In this case we must skip the scheduler step as well. See https://discuss.pytorch.org/t/optimizer-step-before-lr-scheduler-step-error-using-gradscaler/92930/8
                         self.optimizer.zero_grad()
                         num_gradient_steps += 1                        
-
+                        
+                        # Log learning rate if requested and optimizer step was not skipped
+                        if self.lr_logging_interval is not None and not optimizer_skipped:
+                            self.global_opt_step += 1
+                            if self.global_opt_step % self.lr_logging_interval == 0:
+                                self.log_lr(self.global_opt_step)
+                        
                         # Update scheduler on accumulation step if step_on is 'accumulation-step'
                         if self.scheduler_config and self.scheduler_config['step_on'] == 'accumulation-step' and not optimizer_skipped:
                             try:
@@ -510,6 +517,12 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                 self.optimizer.zero_grad(set_to_none=True)
                 num_gradient_steps += 1
 
+                # Log learning rate if requested and optimizer step was not skipped
+                if self.lr_logging_interval is not None and not optimizer_skipped:
+                    self.global_opt_step += 1
+                    if self.global_opt_step % self.lr_logging_interval == 0:
+                        self.log_lr(self.global_opt_step)
+
                 if self.view_progress == 'bar':
                     # Aggiorna la barra per mostrare il totale corretto
                     self.loop.set_postfix(
@@ -523,11 +536,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             self.scheduler.step()
 
         # Save current epoch metrics
-        if num_gradient_steps > 0:
-            per_sample_loss = sum(all_losses) / num_gradient_steps
-        else:
-            # fallback per val/test
-            per_sample_loss = float(np.mean(all_losses))
+        per_sample_loss = float(np.mean(all_losses))
 
         self.current_epoch_metrics = {
             "loss": all_losses,
