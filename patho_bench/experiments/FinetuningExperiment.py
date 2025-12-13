@@ -190,20 +190,37 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                             print(f"Finished epoch = {self.current_epoch} in {end - start:.2f} seconds")
                 
 
-                if self.early_stop:
+                current_gen_err = epoch_loss['val'] - epoch_loss['train']
+
+                if self.early_stop and not new_best_loss['val']:
                     # Update or reset the counter
                     if self.early_stop_policy == "best-val-loss":
-                        impatient_counter  = impatient_counter + 1 if not new_best_loss['val'] else 0
+                        impatient_counter  += 1 
 
+                    # The generalizzation-error early stop 
+                    # monitors the generalization error
+                    # and stops the training if it gets worse
+                    # WITHOUT finding new best loss
                     elif self.early_stop_policy == "generalizzation-error":
-                        current_gen_err = epoch_loss['val'] - epoch_loss['train']
-                        impatient_counter = impatient_counter + 1 if current_gen_err > prev_gen_error else 0
-                        prev_gen_error = current_gen_err
+                        impatient_counter = \
+                            impatient_counter + 1 if (current_gen_err > prev_gen_error) \
+                            else 0
+                        # NB: we reset at any sign of improvement!
+                    else :
+                        #TODO: handle this before starting the training.
+                        pass
                     
+                    # Running out of patience?
                     early_stop_trigger = impatient_counter >= self.patience
+                    
                     if early_stop_trigger:
                         warnings.warn(f"Early stop criteria ({self.early_stop_policy}) met.")
                         break
+                else :
+                    # Any improvement in validation resets impatience
+                    impatient_counter = 0 
+                
+                prev_gen_error = current_gen_err
                 
             # DANGEROUS AND PLANNED TO BE DEPRECATED: stops the whole training if this condition
             # is met.
