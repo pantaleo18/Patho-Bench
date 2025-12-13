@@ -201,7 +201,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                     # monitors the generalization error
                     # and stops the training if it gets worse
                     # WITHOUT finding new best loss
-                    elif self.early_stop_policy == "generalizzation-error":
+                    elif self.early_stop_policy == "er":
                         impatient_counter = \
                             impatient_counter + 1 if (current_gen_err > prev_gen_error) \
                             else 0
