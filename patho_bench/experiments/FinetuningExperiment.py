@@ -6,7 +6,6 @@ import time
 from tqdm import tqdm
 import json
 import warnings
-import math  # MV added
 
 # Import optimizers
 from torch.optim import Adam
@@ -20,6 +19,7 @@ from patho_bench.experiments.utils.LoggingMixin import LoggingMixin
 from patho_bench.experiments.utils.ClassificationMixin import ClassificationMixin
 from patho_bench.experiments.utils.SurvivalMixin import SurvivalMixin
 
+import math 
 
 # Turn off tokenizer parallelism to avoid warnings from dataloader
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -392,7 +392,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
         if self.mode == 'train':
             self.model.train()
             context_manager = torch.enable_grad()
-            self.optimizer.zero_grad(set_to_none=True)  # MV add for gradient accumulation > 1
+            self.optimizer.zero_grad(set_to_none=True) 
         elif self.mode in ['val']:
             self.model.eval()
             context_manager = torch.inference_mode()
@@ -408,7 +408,9 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
         num_gradient_steps = 0
 
         total_batches = len(self.dataloaders[self.mode])  #MV added
-
+        
+        optimizer_skipped = False
+        
         # Loop over each batch in loader
         with context_manager:
             for batch_idx, batch in enumerate(self.dataloaders[self.mode]):
@@ -432,25 +434,15 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                         self.grad_scaler.update()
                         optimizer_skipped = (self.grad_scaler.get_scale() < current_scale) # If optimizer step was skipped due to gradient overflow, then scale will be reduced. In this case we must skip the scheduler step as well. See https://discuss.pytorch.org/t/optimizer-step-before-lr-scheduler-step-error-using-gradscaler/92930/8
                         self.optimizer.zero_grad()
-                        num_gradient_steps += 1
-
-                        # Log learning rate to dashboard on every lr_logging_interval accumulation steps
-                        # if self.scheduler_config and self.lr_logging_interval is not None and num_gradient_steps % self.lr_logging_interval == 0:
-                        #     self.log_lr(batch_idx + self.current_epoch * len(self.dataloaders[self.mode]))                        
+                        num_gradient_steps += 1                        
 
                         # Update scheduler on accumulation step if step_on is 'accumulation-step'
                         if self.scheduler_config and self.scheduler_config['step_on'] == 'accumulation-step' and not optimizer_skipped:
                             try:
-                                # API for custom LR scheduler
-                                # partial_epoch_progress = (batch_idx + 1) / len(self.dataloaders[self.mode])  # MV commented
-                                # self.scheduler.step(total_progress = (self.current_epoch + partial_epoch_progress) / self.num_epochs)  # MV commented
-                                self.scheduler.step()  #MV added
+                                # Default API for built-in LR schedulers
+                                self.scheduler.step()
                             except:
-                                try:
-                                    # Default API for built-in LR schedulers
-                                    self.scheduler.step()
-                                except:
-                                    raise Exception(f"Error stepping scheduler on accumulation-step.")
+                                raise Exception(f"Error stepping scheduler on accumulation-step.")
                 else:
                     if (batch_idx + 1) % self.accumulation_steps == 0:
                         num_gradient_steps += 1
@@ -461,29 +453,47 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                                         num_samples = num_samples_processed,
                                         avg_loss = f'{(sum(all_losses)/num_gradient_steps):.4f}')
 
-        # -------- flush remainder (last partial window) --------  MV added
+
+        # -------- flush remainder (last partial window) --------
         if self.mode == 'train':
             remainder = total_batches % self.accumulation_steps
             if remainder != 0:
-                self.grad_scaler.step(self.optimizer)
                 current_scale = self.grad_scaler.get_scale()
+                self.grad_scaler.step(self.optimizer)
                 self.grad_scaler.update()
                 optimizer_skipped = (self.grad_scaler.get_scale() < current_scale)
+
+                if self.scheduler_config and self.scheduler_config['step_on'] == 'accumulation-step' and not optimizer_skipped:
+                    self.scheduler.step()
+
                 self.optimizer.zero_grad(set_to_none=True)
                 num_gradient_steps += 1
 
-                if self.scheduler_config and self.scheduler_config.get('step_on') == 'accumulation-step' and not optimizer_skipped:
-                    try:
-                        self.scheduler.step()
-                    except:
-                        self.scheduler.step(total_progress=(self.current_epoch + 1) / self.num_epochs)
+                if self.view_progress == 'bar':
+                    # Aggiorna la barra per mostrare il totale corretto
+                    self.loop.set_postfix(
+                        num_batches = f'{total_batches}/{total_batches}',
+                        num_samples = num_samples_processed,
+                        avg_loss = f'{(sum(all_losses)/num_gradient_steps):.4f}'
+                    )
 
         # Update scheduler at end of epoch if step_on is 'epoch'
         if self.mode == 'train' and self.scheduler_config and self.scheduler_config['step_on'] == 'epoch' and not optimizer_skipped:
             self.scheduler.step()
 
         # Save current epoch metrics
-        self.current_epoch_metrics = {"loss": all_losses, "info": all_info, 'per_sample_loss': sum(all_losses)/num_gradient_steps}
+        if num_gradient_steps > 0:
+            per_sample_loss = sum(all_losses) / num_gradient_steps
+        else:
+            # fallback per val/test
+            per_sample_loss = float(np.mean(all_losses))
+
+        self.current_epoch_metrics = {
+            "loss": all_losses,
+            "info": all_info,
+            "per_sample_loss": per_sample_loss
+        }
+
         self.compute_extra_metrics()
 
         # Update best smooth rank
@@ -537,10 +547,18 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                     step_size=self.scheduler_config['step_size'],
                     gamma=self.scheduler_config['gamma'])
             elif self.scheduler_config['type'] == 'cosine':
+                num_batches = len(self.dataloaders['train'])
+                steps_per_epoch = math.ceil(num_batches / self.accumulation_steps)
+                total_optimizer_steps = (
+                    self.num_epochs
+                    if self.scheduler_config['step_on'] == 'epoch'
+                    else steps_per_epoch * self.num_epochs
+                )
                 return torch.optim.lr_scheduler.CosineAnnealingLR(
                     self.optimizer,
-                    T_max=self.num_epochs if self.scheduler_config['step_on'] == 'epoch' else len(self.dataloaders['train']) * self.num_epochs,
-                    eta_min=self.scheduler_config['eta_min'])
+                    T_max=total_optimizer_steps,
+                    eta_min=self.scheduler_config['eta_min']
+                )
             elif self.scheduler_config['type'] == 'cosine_warm_restart':
                 return torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
                     self.optimizer,

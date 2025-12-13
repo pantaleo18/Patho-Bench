@@ -327,13 +327,13 @@ class ExperimentFactory:
         slide_encoder = encoder_factory(model_name_clean, pretrained = False if 'randominit' in model_name or model_name.startswith('abmil') else True, freeze=False, **model_kwargs)
 
         model_kwargs = {
-                        'slide_encoder': slide_encoder,
-                        'post_pooling_dim': slide_encoder.embedding_dim,
-                        'task_name': task_name,
-                        'num_classes': len(task_info['label_dict']),
-                        'loss': loss,
-                        'label_dict' : task_info['label_dict'],
-                        }
+            'slide_encoder': slide_encoder,
+            'post_pooling_dim': slide_encoder.embedding_dim,
+            'task_name': task_name,
+            'num_classes': len(task_info['label_dict']),
+            'loss': loss,
+            'label_dict' : task_info['label_dict'],
+        }
 
         ###### Configure scheduler ################################################################
         if scheduler_type == 'gigapath':
@@ -345,7 +345,7 @@ class ExperimentFactory:
         elif scheduler_type == 'cosine':
             scheduler_config = {'type': 'cosine',
                                 'eta_min': 1e-8,
-                                'step_on': 'epoch'}  #Marica Vagni changed from accumulation-step to epoch
+                                'step_on': 'accumulation-step'}  #Marica Vagni changed from accumulation-step to epoch
         else:
             raise NotImplementedError(f'Scheduler type {scheduler_type} not yet implemented. Please choose from "cosine" or "gigapath".')
 
@@ -419,7 +419,7 @@ class ExperimentFactory:
               pooled_embeddings_dir: str = None,
               patch_embeddings_dirs: list[str] = None,
               model_name: str = None,
-              model_kwargs: dict = {},
+              # model_kwargs: dict = {},
               external_split: str = None,
               external_pooled_embeddings_dir: str = None,
               external_saveto: str = None,
@@ -452,40 +452,50 @@ class ExperimentFactory:
             'task_config': task_config,
             'combine_slides_per_patient': combine_slides_per_patient,
             'gpu': gpu,
-            'pooled_embeddings_dir': pooled_embeddings_dir,
+            # 'pooled_embeddings_dir': pooled_embeddings_dir,
             'patch_embeddings_dirs': patch_embeddings_dirs,
             'model_name': model_name,
-            'model_kwargs': model_kwargs,
+            # 'model_kwargs': model_kwargs,
             'external_split': external_split,
-            'external_pooled_embeddings_dir': external_pooled_embeddings_dir,
+            # 'external_pooled_embeddings_dir': external_pooled_embeddings_dir,
             'external_saveto': external_saveto,
             'num_bootstraps': num_bootstraps,
             'color_map' : color_map,
             'lr_logging_interval' : lr_logging_interval            
         }
 
+        experiments_list = []
         # Iterate over all combinations of hyperparameters.
-        for hyperparams in generate_arg_combinations(sweep_over):
+        for i, hyperparams in enumerate(generate_arg_combinations(sweep_over)):
+            
             # Create a unique experiment directory from the hyperparameters.
-            args['saveto'] = os.path.join(saveto_root, f'{model_name}_{experiment_type}', generate_exp_id(hyperparams))
+            this_config_path = os.path.join(saveto_root, str(i))
+            os.makedirs(this_config_path, exist_ok=True)
+
+            # Save hyperparameters to hyperparameters.json
+            with open(os.path.join(this_config_path, 'hyperparameters.json'), 'w') as f:
+                json.dump(hyperparams, f, indent=4)
+
+            args['saveto'] = this_config_path
             
             if experiment_type == 'finetune':
-                args.pop('pooled_embeddings_dir') # Finetune does not use pooled embeddings
-                args.pop('external_pooled_embeddings_dir') # Finetune does not use pooled embeddings
+                # I only worked with this, I didn't test the others.
                 experiment = ExperimentFactory.finetune(**args, **hyperparams)
-            elif experiment_type == 'linprobe':
-                experiment = ExperimentFactory.linprobe(**args, **hyperparams)
-            elif experiment_type == 'retrieval':
-                experiment = ExperimentFactory.retrieval(**args, **hyperparams)
-            elif experiment_type == 'coxnet':
-                experiment = ExperimentFactory.coxnet(**args, **hyperparams)
-            else:
-                raise NotImplementedError(
-                    f'Experiment type {experiment_type} not recognized. Please choose from "finetune", "linprobe", "retrieval", or "coxnet".'
-                )
-
-            experiment.train()
-            experiment.test()
+            else: 
+                args['pooled_embeddings_dir'] = pooled_embeddings_dir
+                args['external_pooled_embeddings_dir'] = external_pooled_embeddings_dir
+                if experiment_type == 'linprobe':
+                    experiment = ExperimentFactory.linprobe(**args, **hyperparams)
+                elif experiment_type == 'retrieval':
+                    experiment = ExperimentFactory.retrieval(**args, **hyperparams)
+                elif experiment_type == 'coxnet':
+                    experiment = ExperimentFactory.coxnet(**args, **hyperparams)
+                else:
+                    raise NotImplementedError(
+                        f'Experiment type {experiment_type} not recognized. Please choose from "finetune", "linprobe", "retrieval", or "coxnet".'
+                    )
+            experiments_list.append((experiment.train(), experiment.test()))
+        return experiments_list
 
     @staticmethod
     def _prepare_internal_dataset(split_path: str,
