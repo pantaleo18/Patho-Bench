@@ -350,7 +350,7 @@ class ExperimentFactory:
         elif scheduler_type == 'cosine':
             scheduler_config = {'type': 'cosine',
                                 'eta_min': 1e-8,
-                                'step_on': 'accumulation-step'}  #Marica Vagni changed from accumulation-step to epoch
+                                'step_on': 'accumulation-step'} 
         else:
             raise NotImplementedError(f'Scheduler type {scheduler_type} not yet implemented. Please choose from "cosine" or "gigapath".')
 
