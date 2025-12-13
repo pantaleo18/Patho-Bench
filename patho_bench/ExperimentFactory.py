@@ -261,12 +261,15 @@ class ExperimentFactory:
                  model_kwargs: dict = {},
                  layer_decay = None,
                  gpu = -1,
-                 batch_size = 1, # Only batch_size = 1 is supported for finetuning for now
+                 batch_size = 1, 
                  external_split: str = None,
                  external_saveto: str = None,
                  num_bootstraps: int = 100,
                  color_map : str | dict = None,
                  lr_logging_interval : int = 1,
+                 early_stop : bool = False,
+                 patience : int = 3,
+                 halt_training_on_folder_early_stop : bool = False
         ):
         '''
         Create finetuning experiment, where the input is a bag of patch embeddings.
@@ -297,6 +300,8 @@ class ExperimentFactory:
             num_bootstraps: int, number of bootstraps. Default is 100.
             color_map : str | dict, label-color dictionary. 
             lr_logging_interval : int, Marica Vagni added: ensure LR gets logged
+            early_stop : bool, halt the training when validation performance stop improving (defualt = True). Use `patience` to regulate it.
+            patience : int, define how many epochs to wait for improvement before stopping (default = 3).
         '''
         assert batch_size == 1, 'Only batch_size = 1 is supported for finetuning for now'
         
@@ -388,6 +393,9 @@ class ExperimentFactory:
             results_dir = saveto,
             color_map = color_map,
             lr_logging_interval = lr_logging_interval,  
+            early_stop = early_stop,
+            patience = patience,
+            halt_training_on_folder_early_stop=halt_training_on_folder_early_stop
         )
         
         if external_split is None:
@@ -425,7 +433,11 @@ class ExperimentFactory:
               external_saveto: str = None,
               num_bootstraps: int = 100,
               color_map : str | dict = None,
-              lr_logging_interval : int = 1):
+              lr_logging_interval : int = 1,
+              early_stop : bool = False,
+              patience : int = 3,
+              halt_training_on_folder_early_stop : bool = False
+    ):
         '''
         Run a hyperparameter sweep for a given experiment configuration.
 
@@ -461,7 +473,10 @@ class ExperimentFactory:
             'external_saveto': external_saveto,
             'num_bootstraps': num_bootstraps,
             'color_map' : color_map,
-            'lr_logging_interval' : lr_logging_interval            
+            'lr_logging_interval' : lr_logging_interval,
+            'early_stop' : early_stop,
+            'patience' : patience,
+            'halt_training_on_folder_early_stop' : halt_training_on_folder_early_stop,
         }
 
         experiments_list = []

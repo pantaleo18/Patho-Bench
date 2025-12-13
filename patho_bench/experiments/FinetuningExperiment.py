@@ -1,7 +1,6 @@
 import os
 import numpy as np
 import torch
-import torch.nn.functional as F
 import time
 from tqdm import tqdm
 import json
@@ -20,6 +19,8 @@ from patho_bench.experiments.utils.ClassificationMixin import ClassificationMixi
 from patho_bench.experiments.utils.SurvivalMixin import SurvivalMixin
 
 import math 
+import warnings
+
 
 # Turn off tokenizer parallelism to avoid warnings from dataloader
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -48,6 +49,9 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                  lr_logging_interval: int = None,
                  seed: int = 7,
                  color_map : dict = None,
+                 early_stop : bool = False,
+                 patience : int = 3,
+                 halt_training_on_folder_early_stop : bool = False,
                  **kwargs):
         """
         Base class for all experiments.
@@ -70,6 +74,8 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             view_progress (str, optional): How to log progress. Can be 'bar' or 'verbose'. Defaults to 'bar'.
             lr_logging_interval (int, optional): Interval at which to log learning rate to dashboard (in number of accumulation steps). Defaults to None (do not log).
             seed (int): Seed for reproducibility.
+            early_stop : bool, halt the training when validation performance stop improving (defualt = True). Use `patience` to regulate it.
+            patience : int, define how many epochs to wait for improvement before stopping (default = 3).
             **kwargs: Additional arguments to save in config.json
         """
         self.task_type = task_type
@@ -91,6 +97,9 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
         self.seed = seed
         self.set_seed(self.seed)
         self.color_map = color_map
+        self.early_stop = early_stop,
+        self.patience = patience
+        self.halt_training_on_folder_early_stop = halt_training_on_folder_early_stop
         
         # Set kwargs as extra attributes for saving in config.json
         for key, value in kwargs.items():
@@ -107,7 +116,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
         print(f'\nExperiment dir: {self.results_dir}')
         self.save_config(os.path.join(self.results_dir, 'config.json'))
         self.train_results_dir = self.results_dir  # Store a copy of the training results dir for loading model in self.test(), in case want to save test results in a different directory
-
+        
         ### Loop through folds
         for self.current_iter in range(self.dataset.num_folds):
             
@@ -154,22 +163,45 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                 raise ValueError(f"view_progress must be 'bar' or 'verbose', got {self.view_progress} instead.")
             
             ### Loop through epochs
+            steps_without_improvement = 0
+            early_stop_triggered = False
+            
             for self.current_epoch in self.loop:
+                
                 for self.mode in ['train', 'val']:
                     if self.dataloaders[self.mode] is not None:
                         if self.view_progress == 'bar':
                             self.loop.set_description(f'      Epoch {self.current_epoch} {self.mode}')
 
                         start = time.time()
-                        self._run_single_epoch()
+                        improved = self._run_single_epoch()
                         end = time.time()
-
+                        
                         # Save progress to file
                         with open(os.path.join(self.results_dir, 'progress.txt'), 'a') as f:
                             f.write(f'DONE: Fold {self.current_iter + 1}/{self.dataset.num_folds} | {self.mode} | Epoch {self.current_epoch}\n')
                             
                         if self.view_progress == 'verbose':
                             print(f"Finished epoch = {self.current_epoch} in {end - start:.2f} seconds")
+                        
+                        # Early Stopping
+                        if self.early_stop: 
+                            steps_without_improvement += 1 if not improved and self.mode == "val" else 0 # Count or reset.
+                            if steps_without_improvement > self.patience:
+                                warnings.warn(
+                                    f"It's been {self.current_epoch} epochs a new best validation loss is not being found",
+                                    UserWarning
+                                )
+                                early_stop_triggered = True
+                
+                if early_stop_triggered and self.early_stop:
+                    break
+
+            if self.early_stop and early_stop_triggered and self.halt_training_on_folder_early_stop:
+                warnings.warn(
+                    f"Halting training procedure"
+                )
+                break
                             
         # After we finish all folds, try running a final "validation metrics" pass
         self.validate()
@@ -195,7 +227,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
         all_preds_across_folds = []
         all_scores_across_folds = []
 
-        ### Loop through folds
+        ### Loop through folds which have been computed.
         loop = tqdm(range(self.dataset.num_folds))
         for self.current_iter in loop:
             ### Load the dataloader for this fold
@@ -206,12 +238,20 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
 
             ### Get latest saved checkpoint for this fold
             checkpoint_dir = os.path.join(self.results_dir, 'checkpoints', f'fold_{self.current_iter}')
-            ckpt_path = self._pick_checkpoint(checkpoint_dir)
+            try:
+                ckpt_path = self._pick_checkpoint(checkpoint_dir)
+            except FileNotFoundError:
+                warnings.warn(f"No checkpoint found for fold {self.current_iter + 1}. Skipping this fold for {split} evaluation.")
+                continue
 
             ### Load the model and freeze it
-            model = self.model_constructor(**self.model_kwargs, device=self.device)
-            model = self.load_checkpoint(model, ckpt_path)
-            model = self.freeze(model)
+            try:
+                model = self.model_constructor(**self.model_kwargs, device=self.device)
+                model = self.load_checkpoint(model, ckpt_path)
+                model = self.freeze(model)
+            except Exception as e:
+                warnings.warn(f"Failed to load checkpoint for fold {self.current_iter + 1}: {e}. Skipping this fold.")
+                continue
 
             ### Gather labels and predictions
             labels, preds, ids = self._accumulate_preds(eval_dataloader, model)  # MV: ids added for downstream analyses
@@ -341,7 +381,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             summary (dict): Dictionary of summary metrics
         """
         if len(labels_across_folds) > 0:
-            # Perform bootstrapping and calculate 95% CI
+            # Perform bootstrapping and calculate 95% CI (# They do?)
             bootstraps = self.bootstrap(labels_across_folds, preds_across_folds, self.num_bootstraps)
             if self.task_type == 'classification':
                 scores_across_folds = [self.classification_metrics(labels, preds, self.model_kwargs['num_classes'])['overall'] for labels, preds in tqdm(bootstraps, desc=f'Computing {self.num_bootstraps} bootstraps')]
@@ -384,6 +424,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             return os.path.join(checkpoint_dir, available_checkpoints[0])
     
     def _run_single_epoch(self):
+        
         """
         Runs a single training or validation epoch. After the epoch, the epoch metrics are stored in self.current_epoch_metrics.
         """
@@ -403,7 +444,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
         all_losses = []
         all_info = [] # This is additional info returned by the model along with the loss (e.g. predictions, targets, etc.)
         new_best_loss = False
-        new_best_smooth_rank = False
+        new_best_smooth_rank = False #(?)
         num_samples_processed = 0
         num_gradient_steps = 0
 
@@ -527,6 +568,8 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
 
         self.log_loss(self.current_epoch) # Log loss to dashboard on epoch end
         self.log_smooth_rank(self.current_epoch) # Log smooth rank to dashboard on epoch end
+
+        return new_best_loss
     
     def _init_scheduler(self):
         '''
