@@ -125,6 +125,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             # FOR THE CURRENT FOLD
             print("############################################################################################################")
             print(f"Training: Fold {self.current_iter + 1} of {self.dataset.num_folds}...")
+            self.mode = "train"
             self.loggers = self.init_loggers(save_dir = os.path.join(self.results_dir, 'training_metrics', f'fold_{self.current_iter}'))
 
             ### Initialize train and val dataloaders
@@ -138,12 +139,9 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             self.optimizer = self._init_optimizer()
             self.scheduler = self._init_scheduler()
 
-            self.global_opt_step = 0  # MV added: global optimizer-step counter. LR plot
-            # og initial LR at step 0 so plots start at the true initial value # MV added
-            if self.lr_logging_interval is not None: # MV added
-                if not hasattr(self, "mode"):  # MV added
-                    self.mode = "train"  # ensure a label for the LR line  # MV added
-                self.log_lr(0)  # MV added
+            self.global_opt_step = 0  
+            if self.lr_logging_interval is not None: 
+                self.log_lr(0)
 
             ### Prepare grad scaler
             # Only use GradScaler for FP16 training. bfloat16 does not require GradScaler: https://discuss.pytorch.org/t/bfloat16-training-explicit-cast-vs-autocast/202618/8
@@ -164,7 +162,6 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                 self.loop = range(self.num_epochs)
             else:
                 raise ValueError(f"view_progress must be 'bar' or 'verbose', got {self.view_progress} instead.")
-            
             
             impatient_counter = 0
             prev_gen_error = float('inf') 
@@ -491,8 +488,6 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                 num_samples_processed += len(batch['ids'])
                 with torch.autocast(device_type='cuda', dtype=self.precision, enabled=self.precision != torch.float32):
                     loss, info = self.model(batch, output='loss')
-                    loss_for_backward = loss / self.accumulation_steps
-                    # loss = loss / self.accumulation_steps
                     assert isinstance(loss, torch.Tensor), f"Loss must be a tensor, got {loss} instead"
                     assert isinstance(info, list), f"Info must be a list on CPU, got {info} instead"
 
@@ -502,7 +497,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
 
                 # Backward pass if training (note that this is done outside autocast context manager)
                 if self.mode == 'train':
-                    self.grad_scaler.scale(loss_for_backward).backward()
+                    self.grad_scaler.scale(loss / self.accumulation_steps).backward()
                     if (batch_idx + 1) % self.accumulation_steps == 0:
                         self.grad_scaler.step(self.optimizer)
                         current_scale = self.grad_scaler.get_scale()
@@ -511,17 +506,14 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                         self.optimizer.zero_grad()
                         num_gradient_steps += 1                        
                         
-                        # Log learning rate if requested and optimizer step was not skipped
-                        if self.lr_logging_interval is not None and not optimizer_skipped:
-                            self.global_opt_step += 1
-                            if self.global_opt_step % self.lr_logging_interval == 0:
-                                self.log_lr(self.global_opt_step)
-                        
                         # Update scheduler on accumulation step if step_on is 'accumulation-step'
                         if self.scheduler_config and self.scheduler_config['step_on'] == 'accumulation-step' and not optimizer_skipped:
                             try:
                                 # Default API for built-in LR schedulers
                                 self.scheduler.step()
+                                self.global_opt_step += 1
+                                if self.global_opt_step % self.lr_logging_interval == 0:
+                                    self.log_lr(self.global_opt_step)
                             except:
                                 raise Exception(f"Error stepping scheduler on accumulation-step.")
 
@@ -531,27 +523,22 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                                         num_samples = num_samples_processed,
                                         avg_loss = f'{(sum(all_losses)/num_gradient_steps):.4f}')
 
+            # -------- flush remainder (last partial window non updated) --------
+            if self.mode == 'train':
+                remainder = total_batches % self.accumulation_steps
+                if remainder != 0:
+                    self.grad_scaler.step(self.optimizer)
+                    current_scale = self.grad_scaler.get_scale()
+                    self.grad_scaler.update()
+                    optimizer_skipped = (self.grad_scaler.get_scale() < current_scale)
+                    self.optimizer.zero_grad(set_to_none=True)
+                    num_gradient_steps += 1
 
-        # -------- flush remainder (last partial window) --------
-        if self.mode == 'train':
-            remainder = total_batches % self.accumulation_steps
-            if remainder != 0:
-                current_scale = self.grad_scaler.get_scale()
-                self.grad_scaler.step(self.optimizer)
-                self.grad_scaler.update()
-                optimizer_skipped = (self.grad_scaler.get_scale() < current_scale)
-
-                if self.scheduler_config and self.scheduler_config['step_on'] == 'accumulation-step' and not optimizer_skipped:
-                    self.scheduler.step()
-
-                self.optimizer.zero_grad(set_to_none=True)
-                num_gradient_steps += 1
-
-                # Log learning rate if requested and optimizer step was not skipped
-                if self.lr_logging_interval is not None and not optimizer_skipped:
-                    self.global_opt_step += 1
-                    if self.global_opt_step % self.lr_logging_interval == 0:
-                        self.log_lr(self.global_opt_step)
+                    if self.scheduler_config and self.scheduler_config['step_on'] == 'accumulation-step' and not optimizer_skipped:
+                            self.scheduler.step()
+                            self.global_opt_step += 1
+                            if self.global_opt_step % self.lr_logging_interval == 0:
+                                self.log_lr(self.global_opt_step)
 
                 if self.view_progress == 'bar':
                     # Aggiorna la barra per mostrare il totale corretto
@@ -566,7 +553,12 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             self.scheduler.step()
 
         # Save current epoch metrics
-        self.current_epoch_metrics = {"loss": all_losses, "info": all_info, 'avg_loss': sum(all_losses)/num_gradient_steps}
+        self.current_epoch_metrics = {
+            "loss": all_losses,
+            "info": all_info,
+            "avg_loss": np.mean(all_losses)
+        }
+
         self.compute_extra_metrics()
 
         # Update best smooth rank

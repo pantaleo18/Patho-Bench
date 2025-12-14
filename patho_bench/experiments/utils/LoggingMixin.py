@@ -43,8 +43,8 @@ class LoggingMixin:
         return {
             "loss": TrainingMetricsLogger(save_dir, "loss", step_on="epoch"),
             "lr": TrainingMetricsLogger(
-                save_dir, "lr", step_on="epoch"
-            ),  # MV modified: from step_on = 'batch' to step_on='optimizer-step', now step on 'epoch'
+                save_dir, "lr", step_on="optimizer-step"
+            ), 
             "smooth_rank": TrainingMetricsLogger(
                 save_dir, "smooth_rank", step_on="epoch"
             ),
