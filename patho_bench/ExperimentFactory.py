@@ -322,11 +322,19 @@ class ExperimentFactory:
         
         ###### Configure model ################################################################
         model_name_clean = model_name.replace("-randominit", "")
-        slide_encoder = encoder_factory(model_name_clean, pretrained = False if 'randominit' in model_name or model_name.startswith('abmil') else True, freeze=False, **model_kwargs)
 
+        # MP: When model_name = abmil, an ABMILSlideEncoder is returned.
+        slide_encoder = encoder_factory(
+            model_name_clean, 
+            pretrained = False if 'randominit' in model_name or model_name.startswith('abmil') else True, 
+            freeze=False, 
+            **model_kwargs
+        )
+
+        # MP: model_kwargs changes meaning. This will be used bu FinetuningExperiment
         model_kwargs = {
                         'slide_encoder': slide_encoder,
-                        'post_pooling_dim': slide_encoder.embedding_dim,
+                        'post_pooling_dim': slide_encoder.embedding_dim, # patch embedding space
                         'task_name': task_name,
                         'num_classes': len(task_info['label_dict']),
                         'loss': loss,

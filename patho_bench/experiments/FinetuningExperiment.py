@@ -117,7 +117,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             ### Initialize train and val dataloaders
             self.dataloaders = {mode: self.dataset.get_dataloader(self.current_iter, mode, batch_size=self.batch_size) for mode in ['train', 'val']}
             
-            ### Initialize model
+            ### Initialize model (type: TrainableSlideEncoder)
             self.model = self.model_constructor(**self.model_kwargs, device = self.device)
             self.save_model_architecture(self.model, os.path.join(self.results_dir, f'model.txt'))
             
