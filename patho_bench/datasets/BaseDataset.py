@@ -4,6 +4,7 @@ import copy
 import h5py
 import os
 from patho_bench.config.ConfigMixin import ConfigMixin
+from patho_bench.debug.TimingTracker import TimingTracker
 
 """
 This is the BaseDataset class, which is inherited by all dataset classes.
@@ -24,6 +25,7 @@ class BaseDataset(torch.utils.data.Dataset, ConfigMixin):
         self.ids = list(self.data.keys())
         self.num_folds = self.split.num_folds
         self.current_iter = None
+        self.time_tracker = TimingTracker()
         
     def get_subset(self, iteration, fold):
         '''
