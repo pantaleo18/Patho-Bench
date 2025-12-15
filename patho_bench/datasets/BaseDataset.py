@@ -238,13 +238,14 @@ class BaseDataset(torch.utils.data.Dataset, ConfigMixin):
         Returns:
             dataloader (torch.utils.data.DataLoader): Dataloader for the dataset
         '''
-        
+        print(f"BaseDataset.get_dataloader({current_iter = }, {fold =}, {batch_size = }) )")
         subset_dataset = self.get_subset(current_iter, fold)
+        print(f"BaseDataset.get_dataloader: {subset_dataset = }")
         if subset_dataset is None:
             return None
     
         return torch.utils.data.DataLoader(subset_dataset,
                                             batch_size = len(subset_dataset) if batch_size is None else batch_size,
                                             sampler = subset_dataset.get_datasampler('random'),
-                                            num_workers = 4,
+                                            num_workers = 0,
                                             collate_fn = subset_dataset.collate_fn)

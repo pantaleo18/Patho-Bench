@@ -522,6 +522,7 @@ class ExperimentFactory:
                 gpu=gpu
             )
         else:
+            print(f"ExperimentFactory._prepare_internal_dataset: {bag_size =}")
             dataset = DatasetFactory.from_patch_embeddings(
                 split=split,
                 task_name=task_info['task_col'],

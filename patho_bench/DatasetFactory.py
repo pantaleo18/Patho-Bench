@@ -23,6 +23,7 @@ class DatasetFactory:
         '''
         Creates a dataset that returns patch-level embeddings and labels.
         '''
+        print(f"DatasetFactory is creating a patch embedding dataset : {kwargs}")
         return CombinedDataset({
             'slide': DatasetFactory._patch_embeddings_dataset(**kwargs),
             'labels': DatasetFactory._labels_dataset(kwargs['split'], kwargs['task_name'])
@@ -95,7 +96,7 @@ class DatasetFactory:
                                     #                 'coords': lambda x: rearrange(x, "1 p c -> p c")},
                                       bag_size = bag_size,
                                       shuffle = False,
-                                      pad = False,
+                                      pad = True, # QUI SI OMETTE IL PADDING
                                       combine_slides_per_patient = combine_slides_per_patient
                                     )
     

@@ -43,7 +43,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                  precision: torch.dtype,
                  device: str,
                  results_dir: str,
-                 view_progress: str = 'bar',
+                 view_progress: str = 'verbose',
                  lr_logging_interval: int = None,
                  seed: int = 7,
                  color_map : dict = None,
@@ -374,6 +374,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
         # Loop over each batch in loader
         with context_manager:
             for batch_idx, batch in enumerate(self.dataloaders[self.mode]):
+                print(f"FinetuningExperiment._run_single_epoch: batch returned by self.dataloaders[{self.mode}]")
                 num_samples_processed += len(batch['ids'])
                 with torch.autocast(device_type='cuda', dtype=self.precision, enabled=self.precision != torch.float32):
                     loss, info = self.model(batch, output='loss')

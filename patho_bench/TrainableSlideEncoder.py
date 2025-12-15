@@ -59,7 +59,9 @@ class TrainableSlideEncoder(nn.Module):
             Logits (shape: batch_size x n_categories) if return_loss is False, otherwise loss and accuracy
         '''
         # Slide encoding
+        print(f"[TrainableSlideEncoder.forward({batch = }, {output = })]")
         slide_encoder_input = Pooler.prepare_slide_encoder_input_batch(batch['slide'])
+        print(f"[TrainableSlideEncoder fetched {slide_encoder_input} from prepare slide encoder input patch")
         slide_features = Pooler.pool(self.slide_encoder, slide_encoder_input, self.device)
         
         if output == 'features':

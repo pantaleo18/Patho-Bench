@@ -77,12 +77,14 @@ class PatchEmbeddingsDataset(BaseDataset):
           collated_assets (dict): Dictionary of collated assets.
         '''
         collated_assets = {}
-        for asset_key in ['features', 'coords']:
-            if method == 'concat':
-                collated_assets[asset_key] = torch.cat([asset[asset_key] for asset in assets], axis = 0) # Concatenate along first axis (num_patches)
+        # Cicla su tutte le chiavi dei singoli asset, così non perdi la mask
+        for asset_key in assets[0].keys():
+            if method == 'concat' and asset_key != 'mask':
+                collated_assets[asset_key] = torch.cat([asset[asset_key] for asset in assets], axis=0)
             elif method == 'list':
                 collated_assets[asset_key] = [asset[asset_key] for asset in assets]
         return collated_assets
+
     
     def _sample_dict_of_lists(self, assets):
         '''
@@ -110,6 +112,7 @@ class PatchEmbeddingsDataset(BaseDataset):
         Args:
             idx (int or str): Index of sample to return or sample ID
         '''
+        print(f"PatchEmbeddingsDataset__getitem({idx}) called")
         sample_id = self.ids[idx] if isinstance(idx, int) else idx
         # Get slide ids for this sample
         slide_ids = self.data[sample_id]['slide_id']
@@ -142,6 +145,7 @@ class PatchEmbeddingsDataset(BaseDataset):
         assets = [self._apply_preprocessor(asset) for asset in assets]
 
         if self.combine_slides_per_patient:
+            print(f"PathcEmbeddingsDataset.__getitem__ : {self.combine_slides_per_patient = }")
             assets = self._collate_slides(assets, method = 'concat') # Now a dict[tensor]
             if self.bag_size is not None or self.shuffle:
                 assets = self._sample_dict_of_lists(assets)
