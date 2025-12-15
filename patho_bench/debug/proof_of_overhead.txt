@@ -1,0 +1,482 @@
+Timing report:
+  attribute_check                | total 0.000s | avg 0.0000s | n=1
+  getitem_total                  | total 3.743s | avg 3.7435s | n=1
+  h5_load_single                 | total 3.715s | avg 3.7153s | n=1
+  h5_load_total                  | total 3.715s | avg 3.7153s | n=1
+  id_resolution                  | total 0.000s | avg 0.0000s | n=1
+  metadata_attach                | total 0.000s | avg 0.0000s | n=1
+  numpy_to_tensor                | total 0.000s | avg 0.0001s | n=1
+  preprocessing                  | total 0.000s | avg 0.0000s | n=1
+  sampling_per_slide             | total 0.028s | avg 0.0281s | n=1
+  slide_collate_list             | total 0.000s | avg 0.0000s | n=1
+
+ Timing report:
+  attribute_check                | total 0.000s | avg 0.0000s | n=1
+  getitem_total                  | total 0.457s | avg 0.4569s | n=1
+  h5_load_single                 | total 0.428s | avg 0.4276s | n=1
+  h5_load_total                  | total 0.428s | avg 0.4276s | n=1
+  id_resolution                  | total 0.000s | avg 0.0000s | n=1
+  metadata_attach                | total 0.000s | avg 0.0000s | n=1
+  numpy_to_tensor                | total 0.000s | avg 0.0001s | n=1
+  preprocessing                  | total 0.000s | avg 0.0000s | n=1
+  sampling_per_slide             | total 0.029s | avg 0.0292s | n=1
+  slide_collate_list             | total 0.000s | avg 0.0000s | n=1
+batch_idx = 0
+
+ Timing report:
+  attribute_check                | total 0.000s | avg 0.0000s | n=1
+  getitem_total                  | total 7.918s | avg 7.9177s | n=1
+  h5_load_single                 | total 7.886s | avg 7.8860s | n=1
+  h5_load_total                  | total 7.886s | avg 7.8860s | n=1
+  id_resolution                  | total 0.000s | avg 0.0000s | n=1
+  metadata_attach                | total 0.000s | avg 0.0000s | n=1
+  numpy_to_tensor                | total 0.000s | avg 0.0001s | n=1
+  preprocessing                  | total 0.000s | avg 0.0000s | n=1
+  sampling_per_slide             | total 0.032s | avg 0.0315s | n=1
+  slide_collate_list             | total 0.000s | avg 0.0000s | n=1
+
+ Timing report:
+  attribute_check                | total 0.000s | avg 0.0000s | n=1
+  getitem_total                  | total 0.925s | avg 0.9254s | n=1
+  h5_load_single                 | total 0.888s | avg 0.8884s | n=1
+  h5_load_total                  | total 0.888s | avg 0.8884s | n=1
+  id_resolution                  | total 0.000s | avg 0.0000s | n=1
+  metadata_attach                | total 0.000s | avg 0.0000s | n=1
+  numpy_to_tensor                | total 0.000s | avg 0.0001s | n=1
+  preprocessing                  | total 0.000s | avg 0.0000s | n=1
+  sampling_per_slide             | total 0.037s | avg 0.0368s | n=1
+  slide_collate_list             | total 0.000s | avg 0.0000s | n=1
+batch_idx = 1
+
+ Timing report:
+  attribute_check                | total 0.000s | avg 0.0000s | n=1
+  getitem_total                  | total 6.922s | avg 6.9215s | n=1
+  h5_load_single                 | total 6.896s | avg 6.8961s | n=1
+  h5_load_total                  | total 6.896s | avg 6.8961s | n=1
+  id_resolution                  | total 0.000s | avg 0.0000s | n=1
+  metadata_attach                | total 0.000s | avg 0.0000s | n=1
+  numpy_to_tensor                | total 0.000s | avg 0.0001s | n=1
+  preprocessing                  | total 0.000s | avg 0.0000s | n=1
+  sampling_per_slide             | total 0.025s | avg 0.0253s | n=1
+  slide_collate_list             | total 0.000s | avg 0.0000s | n=1
+
+ Timing report:
+  attribute_check                | total 0.000s | avg 0.0000s | n=1
+  getitem_total                  | total 0.722s | avg 0.7218s | n=1
+  h5_load_single                 | total 0.696s | avg 0.6960s | n=1
+  h5_load_total                  | total 0.696s | avg 0.6961s | n=1
+  id_resolution                  | total 0.000s | avg 0.0000s | n=1
+  metadata_attach                | total 0.000s | avg 0.0000s | n=1
+  numpy_to_tensor                | total 0.000s | avg 0.0001s | n=1
+  preprocessing                  | total 0.000s | avg 0.0000s | n=1
+  sampling_per_slide             | total 0.026s | avg 0.0256s | n=1
+  slide_collate_list             | total 0.000s | avg 0.0000s | n=1
+batch_idx = 2
+
+ Timing report:
+  attribute_check                | total 0.000s | avg 0.0000s | n=1
+  getitem_total                  | total 0.081s | avg 0.0815s | n=1
+  h5_load_single                 | total 0.080s | avg 0.0797s | n=1
+  h5_load_total                  | total 0.080s | avg 0.0797s | n=1
+  id_resolution                  | total 0.000s | avg 0.0000s | n=1
+  metadata_attach                | total 0.000s | avg 0.0000s | n=1
+  numpy_to_tensor                | total 0.000s | avg 0.0001s | n=1
+  preprocessing                  | total 0.000s | avg 0.0000s | n=1
+  sampling_per_slide             | total 0.002s | avg 0.0016s | n=1
+  slide_collate_list             | total 0.000s | avg 0.0000s | n=1
+
+ Timing report:
+  attribute_check                | total 0.000s | avg 0.0000s | n=1
+  getitem_total                  | total 0.015s | avg 0.0154s | n=1
+  h5_load_single                 | total 0.011s | avg 0.0114s | n=1
+  h5_load_total                  | total 0.011s | avg 0.0114s | n=1
+  id_resolution                  | total 0.000s | avg 0.0000s | n=1
+  metadata_attach                | total 0.000s | avg 0.0000s | n=1
+  numpy_to_tensor                | total 0.000s | avg 0.0001s | n=1
+  preprocessing                  | total 0.000s | avg 0.0000s | n=1
+  sampling_per_slide             | total 0.004s | avg 0.0039s | n=1
+  slide_collate_list             | total 0.000s | avg 0.0000s | n=1
+batch_idx = 3
+
+ Timing report:
+  attribute_check                | total 0.000s | avg 0.0000s | n=1
+  getitem_total                  | total 7.255s | avg 7.2554s | n=1
+  h5_load_single                 | total 7.231s | avg 7.2305s | n=1
+  h5_load_total                  | total 7.231s | avg 7.2306s | n=1
+  id_resolution                  | total 0.000s | avg 0.0000s | n=1
+  metadata_attach                | total 0.000s | avg 0.0000s | n=1
+  numpy_to_tensor                | total 0.000s | avg 0.0001s | n=1
+  preprocessing                  | total 0.000s | avg 0.0000s | n=1
+  sampling_per_slide             | total 0.025s | avg 0.0247s | n=1
+  slide_collate_list             | total 0.000s | avg 0.0000s | n=1
+
+ Timing report:
+  attribute_check                | total 0.000s | avg 0.0000s | n=1
+  getitem_total                  | total 0.710s | avg 0.7100s | n=1
+  h5_load_single                 | total 0.685s | avg 0.6853s | n=1
+
+ Timing report:
+  attribute_check                | total 0.000s | avg 0.0000s | n=1
+  getitem_total                  | total 0.710s | avg 0.7100s | n=1
+  h5_load_single                 | total 0.685s | avg 0.6853s | n=1
+  attribute_check                | total 0.000s | avg 0.0000s | n=1
+  getitem_total                  | total 0.710s | avg 0.7100s | n=1
+  h5_load_single                 | total 0.685s | avg 0.6853s | n=1
+  h5_load_single                 | total 0.685s | avg 0.6853s | n=1
+  h5_load_total                  | total 0.685s | avg 0.6853s | n=1
+  id_resolution                  | total 0.000s | avg 0.0000s | n=1
+  metadata_attach                | total 0.000s | avg 0.0000s | n=1
+  numpy_to_tensor                | total 0.000s | avg 0.0001s | n=1
+  preprocessing                  | total 0.000s | avg 0.0000s | n=1
+  sampling_per_slide             | total 0.025s | avg 0.0246s | n=1
+  slide_collate_list             | total 0.000s | avg 0.0000s | n=1
+batch_idx = 4
+
+ Timing report:
+  attribute_check                | total 0.000s | avg 0.0000s | n=1
+  getitem_total                  | total 6.376s | avg 6.3759s | n=1
+  h5_load_single                 | total 6.333s | avg 6.3329s | n=1
+  h5_load_total                  | total 6.333s | avg 6.3329s | n=1
+  id_resolution                  | total 0.000s | avg 0.0000s | n=1
+  metadata_attach                | total 0.000s | avg 0.0000s | n=1
+  numpy_to_tensor                | total 0.000s | avg 0.0001s | n=1
+  preprocessing                  | total 0.000s | avg 0.0000s | n=1
+  sampling_per_slide             | total 0.043s | avg 0.0428s | n=1
+  slide_collate_list             | total 0.000s | avg 0.0000s | n=1
+
+ Timing report:
+  attribute_check                | total 0.000s | avg 0.0000s | n=1
+  getitem_total                  | total 0.596s | avg 0.5961s | n=1
+  h5_load_single                 | total 0.572s | avg 0.5717s | n=1
+  h5_load_total                  | total 0.572s | avg 0.5717s | n=1
+  id_resolution                  | total 0.000s | avg 0.0000s | n=1
+  metadata_attach                | total 0.000s | avg 0.0000s | n=1
+  numpy_to_tensor                | total 0.000s | avg 0.0001s | n=1
+  preprocessing                  | total 0.000s | avg 0.0000s | n=1
+  sampling_per_slide             | total 0.024s | avg 0.0243s | n=1
+  slide_collate_list             | total 0.000s | avg 0.0000s | n=1
+batch_idx = 5
+
+ Timing report:
+  attribute_check                | total 0.000s | avg 0.0000s | n=1
+  getitem_total                  | total 4.074s | avg 4.0737s | n=1
+  h5_load_single                 | total 4.048s | avg 4.0480s | n=1
+  h5_load_total                  | total 4.048s | avg 4.0480s | n=1
+  id_resolution                  | total 0.000s | avg 0.0000s | n=1
+  metadata_attach                | total 0.000s | avg 0.0000s | n=1
+  numpy_to_tensor                | total 0.000s | avg 0.0001s | n=1
+  preprocessing                  | total 0.000s | avg 0.0000s | n=1
+  sampling_per_slide             | total 0.026s | avg 0.0255s | n=1
+  slide_collate_list             | total 0.000s | avg 0.0000s | n=1
+
+ Timing report:
+  attribute_check                | total 0.000s | avg 0.0000s | n=1
+  getitem_total                  | total 0.467s | avg 0.4673s | n=1
+  h5_load_single                 | total 0.443s | avg 0.4426s | n=1
+  h5_load_total                  | total 0.443s | avg 0.4426s | n=1
+  id_resolution                  | total 0.000s | avg 0.0000s | n=1
+  metadata_attach                | total 0.000s | avg 0.0000s | n=1
+  numpy_to_tensor                | total 0.000s | avg 0.0001s | n=1
+  preprocessing                  | total 0.000s | avg 0.0000s | n=1
+  sampling_per_slide             | total 0.025s | avg 0.0245s | n=1
+  slide_collate_list             | total 0.000s | avg 0.0000s | n=1
+batch_idx = 6
+
+ Timing report:
+  attribute_check                | total 0.000s | avg 0.0000s | n=1
+  getitem_total                  | total 3.834s | avg 3.8336s | n=1
+  h5_load_single                 | total 3.807s | avg 3.8068s | n=1
+  h5_load_total                  | total 3.807s | avg 3.8068s | n=1
+  id_resolution                  | total 0.000s | avg 0.0000s | n=1
+  metadata_attach                | total 0.000s | avg 0.0000s | n=1
+  numpy_to_tensor                | total 0.000s | avg 0.0001s | n=1
+  preprocessing                  | total 0.000s | avg 0.0000s | n=1
+  sampling_per_slide             | total 0.027s | avg 0.0267s | n=1
+  slide_collate_list             | total 0.000s | avg 0.0000s | n=1
+
+ Timing report:
+  attribute_check                | total 0.000s | avg 0.0000s | n=1
+  getitem_total                  | total 0.433s | avg 0.4329s | n=1
+  h5_load_single                 | total 0.407s | avg 0.4069s | n=1
+  h5_load_total                  | total 0.407s | avg 0.4070s | n=1
+  id_resolution                  | total 0.000s | avg 0.0000s | n=1
+  metadata_attach                | total 0.000s | avg 0.0000s | n=1
+  numpy_to_tensor                | total 0.000s | avg 0.0001s | n=1
+  preprocessing                  | total 0.000s | avg 0.0000s | n=1
+  sampling_per_slide             | total 0.026s | avg 0.0259s | n=1
+  slide_collate_list             | total 0.000s | avg 0.0000s | n=1
+batch_idx = 7
+
+ Timing report:
+  attribute_check                | total 0.000s | avg 0.0000s | n=1
+  getitem_total                  | total 8.322s | avg 8.3217s | n=1
+  h5_load_single                 | total 8.283s | avg 8.2831s | n=1
+  h5_load_total                  | total 8.283s | avg 8.2831s | n=1
+  id_resolution                  | total 0.000s | avg 0.0000s | n=1
+  metadata_attach                | total 0.000s | avg 0.0000s | n=1
+  numpy_to_tensor                | total 0.000s | avg 0.0001s | n=1
+  preprocessing                  | total 0.000s | avg 0.0000s | n=1
+  sampling_per_slide             | total 0.039s | avg 0.0385s | n=1
+  slide_collate_list             | total 0.000s | avg 0.0000s | n=1
+
+ Timing report:
+  attribute_check                | total 0.000s | avg 0.0000s | n=1
+  getitem_total                  | total 0.815s | avg 0.8154s | n=1
+  h5_load_single                 | total 0.780s | avg 0.7804s | n=1
+  h5_load_total                  | total 0.780s | avg 0.7804s | n=1
+  id_resolution                  | total 0.000s | avg 0.0000s | n=1
+  metadata_attach                | total 0.000s | avg 0.0000s | n=1
+  numpy_to_tensor                | total 0.000s | avg 0.0001s | n=1
+  preprocessing                  | total 0.000s | avg 0.0000s | n=1
+  sampling_per_slide             | total 0.035s | avg 0.0348s | n=1
+  slide_collate_list             | total 0.000s | avg 0.0000s | n=1
+batch_idx = 8
+
+ Timing report:
+  attribute_check                | total 0.000s | avg 0.0000s | n=1
+  getitem_total                  | total 0.292s | avg 0.2915s | n=1
+  h5_load_single                 | total 0.289s | avg 0.2893s | n=1
+  h5_load_total                  | total 0.289s | avg 0.2893s | n=1
+  id_resolution                  | total 0.000s | avg 0.0000s | n=1
+  metadata_attach                | total 0.000s | avg 0.0000s | n=1
+  numpy_to_tensor                | total 0.000s | avg 0.0001s | n=1
+  preprocessing                  | total 0.000s | avg 0.0000s | n=1
+  sampling_per_slide             | total 0.002s | avg 0.0021s | n=1
+  slide_collate_list             | total 0.000s | avg 0.0000s | n=1
+
+ Timing report:
+  attribute_check                | total 0.000s | avg 0.0000s | n=1
+  getitem_total                  | total 0.046s | avg 0.0463s | n=1
+  h5_load_single                 | total 0.044s | avg 0.0444s | n=1
+  h5_load_total                  | total 0.044s | avg 0.0444s | n=1
+  id_resolution                  | total 0.000s | avg 0.0000s | n=1
+  metadata_attach                | total 0.000s | avg 0.0000s | n=1
+  numpy_to_tensor                | total 0.000s | avg 0.0001s | n=1
+  preprocessing                  | total 0.000s | avg 0.0000s | n=1
+  sampling_per_slide             | total 0.002s | avg 0.0018s | n=1
+  slide_collate_list             | total 0.000s | avg 0.0000s | n=1
+batch_idx = 9
+
+ Timing report:
+  attribute_check                | total 0.000s | avg 0.0000s | n=1
+  getitem_total                  | total 6.398s | avg 6.3981s | n=1
+  h5_load_single                 | total 6.373s | avg 6.3734s | n=1
+  h5_load_total                  | total 6.373s | avg 6.3735s | n=1
+  id_resolution                  | total 0.000s | avg 0.0000s | n=1
+  metadata_attach                | total 0.000s | avg 0.0000s | n=1
+  numpy_to_tensor                | total 0.000s | avg 0.0001s | n=1
+  preprocessing                  | total 0.000s | avg 0.0000s | n=1
+  sampling_per_slide             | total 0.025s | avg 0.0245s | n=1
+  slide_collate_list             | total 0.000s | avg 0.0000s | n=1
+
+ Timing report:
+  attribute_check                | total 0.000s | avg 0.0000s | n=1
+  getitem_total                  | total 0.626s | avg 0.6259s | n=1
+  h5_load_single                 | total 0.600s | avg 0.6004s | n=1
+  h5_load_total                  | total 0.600s | avg 0.6004s | n=1
+  id_resolution                  | total 0.000s | avg 0.0000s | n=1
+  metadata_attach                | total 0.000s | avg 0.0000s | n=1
+  numpy_to_tensor                | total 0.000s | avg 0.0001s | n=1
+  preprocessing                  | total 0.000s | avg 0.0000s | n=1
+  sampling_per_slide             | total 0.025s | avg 0.0254s | n=1
+  slide_collate_list             | total 0.000s | avg 0.0000s | n=1
+batch_idx = 10
+
+ Timing report:
+  attribute_check                | total 0.000s | avg 0.0000s | n=1
+  getitem_total                  | total 6.936s | avg 6.9361s | n=1
+  h5_load_single                 | total 6.912s | avg 6.9117s | n=1
+  h5_load_total                  | total 6.912s | avg 6.9117s | n=1
+  id_resolution                  | total 0.000s | avg 0.0000s | n=1
+  metadata_attach                | total 0.000s | avg 0.0000s | n=1
+  numpy_to_tensor                | total 0.000s | avg 0.0001s | n=1
+  preprocessing                  | total 0.000s | avg 0.0000s | n=1
+  sampling_per_slide             | total 0.024s | avg 0.0243s | n=1
+  slide_collate_list             | total 0.000s | avg 0.0000s | n=1
+
+ Timing report:
+  attribute_check                | total 0.000s | avg 0.0000s | n=1
+  getitem_total                  | total 0.769s | avg 0.7694s | n=1
+  h5_load_single                 | total 0.744s | avg 0.7441s | n=1
+  h5_load_total                  | total 0.744s | avg 0.7441s | n=1
+  id_resolution                  | total 0.000s | avg 0.0000s | n=1
+  metadata_attach                | total 0.000s | avg 0.0000s | n=1
+  numpy_to_tensor                | total 0.000s | avg 0.0001s | n=1
+  preprocessing                  | total 0.000s | avg 0.0000s | n=1
+  sampling_per_slide             | total 0.025s | avg 0.0251s | n=1
+  slide_collate_list             | total 0.000s | avg 0.0000s | n=1
+batch_idx = 11
+
+ Timing report:
+  attribute_check                | total 0.000s | avg 0.0000s | n=1
+  getitem_total                  | total 7.728s | avg 7.7283s | n=1
+  h5_load_single                 | total 7.703s | avg 7.7034s | n=1
+  h5_load_total                  | total 7.703s | avg 7.7034s | n=1
+  id_resolution                  | total 0.000s | avg 0.0000s | n=1
+  metadata_attach                | total 0.000s | avg 0.0000s | n=1
+  numpy_to_tensor                | total 0.000s | avg 0.0001s | n=1
+  preprocessing                  | total 0.000s | avg 0.0000s | n=1
+  sampling_per_slide             | total 0.025s | avg 0.0247s | n=1
+  slide_collate_list             | total 0.000s | avg 0.0000s | n=1
+
+ Timing report:
+  attribute_check                | total 0.000s | avg 0.0000s | n=1
+  getitem_total                  | total 0.776s | avg 0.7755s | n=1
+  h5_load_single                 | total 0.714s | avg 0.7136s | n=1
+  h5_load_total                  | total 0.714s | avg 0.7136s | n=1
+  id_resolution                  | total 0.000s | avg 0.0000s | n=1
+  metadata_attach                | total 0.000s | avg 0.0000s | n=1
+  numpy_to_tensor                | total 0.000s | avg 0.0001s | n=1
+  preprocessing                  | total 0.000s | avg 0.0000s | n=1
+  sampling_per_slide             | total 0.062s | avg 0.0618s | n=1
+  slide_collate_list             | total 0.000s | avg 0.0000s | n=1
+batch_idx = 12
+
+ Timing report:
+  attribute_check                | total 0.000s | avg 0.0000s | n=1
+  getitem_total                  | total 5.986s | avg 5.9857s | n=1
+  h5_load_single                 | total 5.962s | avg 5.9624s | n=1
+  h5_load_total                  | total 5.962s | avg 5.9624s | n=1
+  id_resolution                  | total 0.000s | avg 0.0000s | n=1
+  metadata_attach                | total 0.000s | avg 0.0000s | n=1
+  numpy_to_tensor                | total 0.000s | avg 0.0001s | n=1
+  preprocessing                  | total 0.000s | avg 0.0000s | n=1
+  sampling_per_slide             | total 0.023s | avg 0.0232s | n=1
+  slide_collate_list             | total 0.000s | avg 0.0000s | n=1
+
+ Timing report:
+  attribute_check                | total 0.000s | avg 0.0000s | n=1
+  getitem_total                  | total 0.549s | avg 0.5488s | n=1
+  h5_load_single                 | total 0.507s | avg 0.5066s | n=1
+  h5_load_total                  | total 0.507s | avg 0.5066s | n=1
+  id_resolution                  | total 0.000s | avg 0.0000s | n=1
+  metadata_attach                | total 0.000s | avg 0.0000s | n=1
+  numpy_to_tensor                | total 0.000s | avg 0.0001s | n=1
+  preprocessing                  | total 0.000s | avg 0.0000s | n=1
+  sampling_per_slide             | total 0.042s | avg 0.0420s | n=1
+  slide_collate_list             | total 0.000s | avg 0.0000s | n=1
+batch_idx = 13
+
+ Timing report:
+  attribute_check                | total 0.000s | avg 0.0000s | n=1
+  getitem_total                  | total 5.859s | avg 5.8593s | n=1
+  h5_load_single                 | total 5.834s | avg 5.8342s | n=1
+  h5_load_total                  | total 5.834s | avg 5.8342s | n=1
+  id_resolution                  | total 0.000s | avg 0.0000s | n=1
+  metadata_attach                | total 0.000s | avg 0.0000s | n=1
+  numpy_to_tensor                | total 0.000s | avg 0.0001s | n=1
+  preprocessing                  | total 0.000s | avg 0.0000s | n=1
+  sampling_per_slide             | total 0.025s | avg 0.0250s | n=1
+  slide_collate_list             | total 0.000s | avg 0.0000s | n=1
+
+ Timing report:
+  attribute_check                | total 0.000s | avg 0.0000s | n=1
+  getitem_total                  | total 0.603s | avg 0.6030s | n=1
+  h5_load_single                 | total 0.578s | avg 0.5775s | n=1
+  h5_load_total                  | total 0.578s | avg 0.5775s | n=1
+  id_resolution                  | total 0.000s | avg 0.0000s | n=1
+  metadata_attach                | total 0.000s | avg 0.0000s | n=1
+  numpy_to_tensor                | total 0.000s | avg 0.0001s | n=1
+  preprocessing                  | total 0.000s | avg 0.0000s | n=1
+  sampling_per_slide             | total 0.025s | avg 0.0253s | n=1
+  slide_collate_list             | total 0.000s | avg 0.0000s | n=1
+batch_idx = 14
+
+ Timing report:
+  attribute_check                | total 0.000s | avg 0.0000s | n=1
+  getitem_total                  | total 7.289s | avg 7.2892s | n=1
+  h5_load_single                 | total 7.264s | avg 7.2641s | n=1
+  h5_load_total                  | total 7.264s | avg 7.2641s | n=1
+  id_resolution                  | total 0.000s | avg 0.0000s | n=1
+  metadata_attach                | total 0.000s | avg 0.0000s | n=1
+  numpy_to_tensor                | total 0.000s | avg 0.0001s | n=1
+  preprocessing                  | total 0.000s | avg 0.0000s | n=1
+  sampling_per_slide             | total 0.025s | avg 0.0250s | n=1
+  slide_collate_list             | total 0.000s | avg 0.0000s | n=1
+
+ Timing report:
+  attribute_check                | total 0.000s | avg 0.0000s | n=1
+  getitem_total                  | total 0.799s | avg 0.7994s | n=1
+  h5_load_single                 | total 0.774s | avg 0.7737s | n=1
+  h5_load_total                  | total 0.774s | avg 0.7737s | n=1
+  id_resolution                  | total 0.000s | avg 0.0000s | n=1
+  metadata_attach                | total 0.000s | avg 0.0000s | n=1
+  numpy_to_tensor                | total 0.000s | avg 0.0001s | n=1
+  preprocessing                  | total 0.000s | avg 0.0000s | n=1
+  sampling_per_slide             | total 0.026s | avg 0.0255s | n=1
+  slide_collate_list             | total 0.000s | avg 0.0000s | n=1
+batch_idx = 15
+
+ Timing report:
+  attribute_check                | total 0.000s | avg 0.0000s | n=1
+  getitem_total                  | total 4.735s | avg 4.7347s | n=1
+  h5_load_single                 | total 4.706s | avg 4.7061s | n=1
+  h5_load_total                  | total 4.706s | avg 4.7061s | n=1
+  id_resolution                  | total 0.000s | avg 0.0000s | n=1
+  metadata_attach                | total 0.000s | avg 0.0000s | n=1
+  numpy_to_tensor                | total 0.000s | avg 0.0001s | n=1
+  preprocessing                  | total 0.000s | avg 0.0000s | n=1
+  sampling_per_slide             | total 0.028s | avg 0.0284s | n=1
+  slide_collate_list             | total 0.000s | avg 0.0000s | n=1
+
+ Timing report:
+  attribute_check                | total 0.000s | avg 0.0000s | n=1
+  getitem_total                  | total 0.538s | avg 0.5382s | n=1
+  h5_load_single                 | total 0.505s | avg 0.5053s | n=1
+  h5_load_total                  | total 0.505s | avg 0.5053s | n=1
+  id_resolution                  | total 0.000s | avg 0.0000s | n=1
+  metadata_attach                | total 0.000s | avg 0.0000s | n=1
+  numpy_to_tensor                | total 0.000s | avg 0.0001s | n=1
+  preprocessing                  | total 0.000s | avg 0.0000s | n=1
+  sampling_per_slide             | total 0.033s | avg 0.0328s | n=1
+  slide_collate_list             | total 0.000s | avg 0.0000s | n=1
+batch_idx = 16
+
+ Timing report:
+  attribute_check                | total 0.000s | avg 0.0000s | n=1
+  getitem_total                  | total 6.009s | avg 6.0093s | n=1
+  h5_load_single                 | total 5.985s | avg 5.9848s | n=1
+  h5_load_total                  | total 5.985s | avg 5.9848s | n=1
+  id_resolution                  | total 0.000s | avg 0.0000s | n=1
+  metadata_attach                | total 0.000s | avg 0.0000s | n=1
+  numpy_to_tensor                | total 0.000s | avg 0.0001s | n=1
+  preprocessing                  | total 0.000s | avg 0.0000s | n=1
+  sampling_per_slide             | total 0.024s | avg 0.0244s | n=1
+  slide_collate_list             | total 0.000s | avg 0.0000s | n=1
+
+ Timing report:
+  attribute_check                | total 0.000s | avg 0.0000s | n=1
+  getitem_total                  | total 0.872s | avg 0.8724s | n=1
+  h5_load_single                 | total 0.578s | avg 0.5777s | n=1
+  h5_load_total                  | total 0.578s | avg 0.5777s | n=1
+  id_resolution                  | total 0.000s | avg 0.0000s | n=1
+  metadata_attach                | total 0.000s | avg 0.0000s | n=1
+  numpy_to_tensor                | total 0.000s | avg 0.0001s | n=1
+  preprocessing                  | total 0.000s | avg 0.0000s | n=1
+  sampling_per_slide             | total 0.295s | avg 0.2945s | n=1
+  slide_collate_list             | total 0.000s | avg 0.0000s | n=1
+batch_idx = 17
+
+ Timing report:
+  attribute_check                | total 0.000s | avg 0.0000s | n=1
+  getitem_total                  | total 4.766s | avg 4.7655s | n=1
+  h5_load_single                 | total 4.739s | avg 4.7386s | n=1
+  h5_load_total                  | total 4.739s | avg 4.7386s | n=1
+  id_resolution                  | total 0.000s | avg 0.0000s | n=1
+  metadata_attach                | total 0.000s | avg 0.0000s | n=1
+  numpy_to_tensor                | total 0.000s | avg 0.0001s | n=1
+  preprocessing                  | total 0.000s | avg 0.0000s | n=1
+  sampling_per_slide             | total 0.027s | avg 0.0268s | n=1
+  slide_collate_list             | total 0.000s | avg 0.0000s | n=1
+
+ Timing report:
+  attribute_check                | total 0.000s | avg 0.0000s | n=1
+  getitem_total                  | total 0.427s | avg 0.4273s | n=1
+  h5_load_single                 | total 0.401s | avg 0.4014s | n=1
+  h5_load_total                  | total 0.401s | avg 0.4014s | n=1
+  id_resolution                  | total 0.000s | avg 0.0000s | n=1
+  metadata_attach                | total 0.000s | avg 0.0000s | n=1
+  numpy_to_tensor                | total 0.000s | avg 0.0001s | n=1
+  preprocessing                  | total 0.000s | avg 0.0000s | n=1
+  sampling_per_slide             | total 0.026s | avg 0.0258s | n=1
+  slide_collate_list             | total 0.000s | avg 0.0000s | n=1
