@@ -305,7 +305,6 @@ class ExperimentFactory:
             early_stop : bool, halt the training when validation performance stop improving (defualt = True). Use `patience` to regulate it.
             patience : int, define how many epochs to wait for improvement before stopping (default = 3).
         '''
-        assert batch_size == 1, 'Only batch_size = 1 is supported for finetuning for now'
         
         ###### Get dataset ################################################################
         split, task_info, internal_dataset = ExperimentFactory._prepare_internal_dataset(split_path=split,
@@ -331,8 +330,15 @@ class ExperimentFactory:
         
         ###### Configure model ################################################################
         model_name_clean = model_name.replace("-randominit", "")
-        slide_encoder = encoder_factory(model_name_clean, pretrained = False if 'randominit' in model_name or model_name.startswith('abmil') else True, freeze=False, **model_kwargs)
 
+        slide_encoder = encoder_factory(
+            model_name_clean, 
+            pretrained = False if 'randominit' in model_name or model_name.startswith('abmil') else True, 
+            freeze=False, 
+            **model_kwargs
+        )
+
+        # MP: model_kwargs changes meaning. This will be used bu FinetuningExperiment
         model_kwargs = {
             'slide_encoder': slide_encoder,
             'post_pooling_dim': slide_encoder.embedding_dim,

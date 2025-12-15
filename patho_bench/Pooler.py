@@ -97,19 +97,26 @@ class Pooler:
         Returns:
             cleaned_batch (dict or list[dict]): Cleaned up slide sample or list of slide samples
         '''
-        assert len(sample_collated['id']) == 1, "Batch size must be 1 to be compatible with Trident slide encoders."
         
         if isinstance(sample_collated['features'], torch.Tensor): # combine_slides_per_patient was set to True when initializing the dataset
             cleaned_sample = {
                 'features': sample_collated['features'],
                 'coords': sample_collated['coords'],
+                'mask' : sample_collated['mask'],
                 'attributes': {'patch_size_level0': sample_collated['attributes']['patch_size_level0'][0]} # BaseDataset.collate_fn() collates the attributes as well so we need to get the first (only) element
             }
         elif isinstance(sample_collated['features'], list): # combine_slides_per_patient was set to False when initializing the dataset
             cleaned_sample = []
-            for features, coords, attributes in zip(sample_collated['features'], sample_collated['coords'], sample_collated['attributes']):
+
+            for features, coords, mask, attributes in zip(
+                    sample_collated['features'], 
+                    sample_collated['coords'], 
+                    sample_collated['mask'], 
+                    sample_collated['attributes']):
+                
                 cleaned_sample.append({
                     'features': features,
+                    'mask': mask,
                     'coords': coords,
                     'attributes': {'patch_size_level0': attributes['patch_size_level0'][0]} # BaseDataset.collate_fn() collates the attributes as well so we need to get the first (only) element
                 })

@@ -77,9 +77,10 @@ class PatchEmbeddingsDataset(BaseDataset):
           collated_assets (dict): Dictionary of collated assets.
         '''
         collated_assets = {}
-        for asset_key in ['features', 'coords']:
-            if method == 'concat':
-                collated_assets[asset_key] = torch.cat([asset[asset_key] for asset in assets], axis = 0) # Concatenate along first axis (num_patches)
+        # Cicla su tutte le chiavi dei singoli asset, così non perdi la mask
+        for asset_key in assets[0].keys():
+            if method == 'concat' and asset_key != 'mask':
+                collated_assets[asset_key] = torch.cat([asset[asset_key] for asset in assets], axis=0)
             elif method == 'list':
                 collated_assets[asset_key] = [asset[asset_key] for asset in assets]
         return collated_assets
