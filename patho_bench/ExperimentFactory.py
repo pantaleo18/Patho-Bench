@@ -265,7 +265,8 @@ class ExperimentFactory:
                  external_split: str = None,
                  external_saveto: str = None,
                  num_bootstraps: int = 100,
-                 color_map : str | dict = None
+                 color_map : str | dict = None,
+                 view_progress : str = "bar",
         ):
         '''
         Create finetuning experiment, where the input is a bag of patch embeddings.
@@ -392,7 +393,8 @@ class ExperimentFactory:
             precision = slide_encoder.precision,
             device = f'cuda:{gpu if gpu != -1 else GPUManager.get_best_gpu(min_mb=500)}',
             results_dir = saveto,
-            color_map = color_map
+            color_map = color_map,
+            view_progress=view_progress,
         )
         
         if external_split is None:
@@ -428,7 +430,9 @@ class ExperimentFactory:
               external_split: str = None,
               external_pooled_embeddings_dir: str = None,
               external_saveto: str = None,
-              num_bootstraps: int = 100):
+              num_bootstraps: int = 100,
+              view_progress : str = "bar"
+              ):
         '''
         Run a hyperparameter sweep for a given experiment configuration.
 
@@ -462,7 +466,8 @@ class ExperimentFactory:
             'external_split': external_split,
             'external_pooled_embeddings_dir': external_pooled_embeddings_dir,
             'external_saveto': external_saveto,
-            'num_bootstraps': num_bootstraps            
+            'num_bootstraps': num_bootstraps,
+            'view_progress' : view_progress,          
         }
 
         # Iterate over all combinations of hyperparameters.

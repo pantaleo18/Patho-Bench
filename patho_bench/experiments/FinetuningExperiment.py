@@ -374,14 +374,13 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
         # Loop over each batch in loader
         with context_manager:
             for batch_idx, batch in enumerate(self.dataloaders[self.mode]):
-                print(f"FinetuningExperiment._run_single_epoch: batch returned by self.dataloaders[{self.mode}]")
                 num_samples_processed += len(batch['ids'])
                 with torch.autocast(device_type='cuda', dtype=self.precision, enabled=self.precision != torch.float32):
                     loss, info = self.model(batch, output='loss')
                     loss = loss / self.accumulation_steps
                     assert isinstance(loss, torch.Tensor), f"Loss must be a tensor, got {loss} instead"
                     assert isinstance(info, list), f"Info must be a list on CPU, got {info} instead"
-
+                
                 # Update trackers
                 all_losses.append(loss.cpu().detach().numpy())
                 all_info.extend(info)

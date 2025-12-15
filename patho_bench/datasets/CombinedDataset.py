@@ -27,5 +27,4 @@ class CombinedDataset(BaseDataset):
         for dataset_name, dataset in self.child_datasets.items():
             batch[dataset_name] = dataset[idx]
             assert dataset[idx]['id'] == self.ids[idx], f'Sample {idx} in dataset {dataset_name} has different ID than expected: {dataset[idx]["id"]} != {self.ids[idx]}'
-        print(f"[CombinedDataset.__gettitem__(self,{idx})] : {batch}")
         return batch

@@ -23,7 +23,6 @@ class DatasetFactory:
         '''
         Creates a dataset that returns patch-level embeddings and labels.
         '''
-        print(f"DatasetFactory is creating a patch embedding dataset : {kwargs}")
         return CombinedDataset({
             'slide': DatasetFactory._patch_embeddings_dataset(**kwargs),
             'labels': DatasetFactory._labels_dataset(kwargs['split'], kwargs['task_name'])

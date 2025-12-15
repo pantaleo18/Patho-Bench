@@ -98,14 +98,8 @@ class Pooler:
             cleaned_batch (dict or list[dict]): Cleaned up slide sample or list of slide samples
         '''
         
-        print("Sample collated keys:", sample_collated.keys())
         # assert len(sample_collated['id']) == 1, "Batch size must be 1 to be compatible with Trident slide encoders."
-        print(f"Pooler.prepare_slide_encoder_input_batch({sample_collated =})")
-        print("Pooler.prepare_slide_encoder_input_batch: This method contains an assertions on batch size (==1)")
-        print(f"Pooler.prepare_slide_encoder_input_batch: This method returns cleaned_sample")
         if isinstance(sample_collated['features'], torch.Tensor): # combine_slides_per_patient was set to True when initializing the dataset
-            print(f"Pooler.prepare_slide_encoder_input_batch: sample_collated['features'] is a tensor")
-            print(f"Pooler.prepare_slide_encoder_input_batch: {sample_collated['features'] =}")
             cleaned_sample = {
                 'features': sample_collated['features'],
                 'coords': sample_collated['coords'],
@@ -113,8 +107,6 @@ class Pooler:
                 'attributes': {'patch_size_level0': sample_collated['attributes']['patch_size_level0'][0]} # BaseDataset.collate_fn() collates the attributes as well so we need to get the first (only) element
             }
         elif isinstance(sample_collated['features'], list): # combine_slides_per_patient was set to False when initializing the dataset
-            print(f"Pooler.prepare_slide_encoder_input_batch: sample_collated['features'] is a list")
-            print(f"Pooler.prepare_slide_encoder_input_batch: {sample_collated['features'] =}")
             cleaned_sample = []
 
             for features, coords, mask, attributes in zip(
@@ -122,12 +114,6 @@ class Pooler:
                     sample_collated['coords'], 
                     sample_collated['mask'], 
                     sample_collated['attributes']):
-                
-                # Sicuro print delle chiavi
-                if isinstance(features, dict):
-                    print("Keys before cleaning:", features.keys())
-                else:
-                    print("Features type:", type(features))
                 
                 cleaned_sample.append({
                     'features': features,
@@ -148,14 +134,10 @@ class Pooler:
             sample_collated (dict or list[dict]): Sample or list of cleaned up samples
             device (str): Device to run on ('cuda' or 'cpu')
         '''
-        print(f"Pooler.pool({model = }, {cleaned_sample = }, {device = })")
         if isinstance(cleaned_sample, list):
-            print("[Pooler.pool] cleaned_sample is a list")
             pooled_feature = []
             for batch in cleaned_sample:
-                print(f"Pooler.pool: batch in cleaned example is: {batch = }")
                 pooled_feature.append(model.forward(batch, device))
             return torch.stack(pooled_feature).mean(dim=0)
         else:
-            print("cleaned sample is not a list, and it goes straight to forward")
             return model.forward(cleaned_sample, device)
