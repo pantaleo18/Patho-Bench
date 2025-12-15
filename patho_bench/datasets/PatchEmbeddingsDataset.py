@@ -106,54 +106,16 @@ class PatchEmbeddingsDataset(BaseDataset):
         
         return sampled_assets
     
-    def __getitem__(self, idx):
-        '''
-        Args:
-            idx (int or str): Index of sample to return or sample ID
-        '''
-        sample_id = self.ids[idx] if isinstance(idx, int) else idx
-        # Get slide ids for this sample
-        slide_ids = self.data[sample_id]['slide_id']
-        if len(slide_ids) == 0:
-            display(self.data)
-            raise ValueError(f'No slides found for case ID {sample_id} in split with {len(self.data)} samples')
-        
-        # Load list of asset dicts
-        assets = []
-        attributes = [] # Attributes of each slide
-        for slide_id in slide_ids:
-            if slide_id not in self.available_slide_paths:
-                raise ValueError(f"Slide {slide_id} not found in {self.load_from}.")
-            
-            data, attrs = self.load_h5(self.available_slide_paths[slide_id], keys = ['features', 'coords'])
-            assets.append(data)
-            attributes.append({
-                # Only collecting patch_size_level0 for now, but could collect other attributes in the future depending on what is needed by the pooling model
-                'patch_size_level0': attrs['coords']['patch_size_level0'] if 'patch_size_level0' in attrs['coords'] else None
-            })
-            
-        if self.combine_slides_per_patient:
-            assert all(attr == attributes[0] for attr in attributes), f'Tried to combine slides for each patient, but attributes of slides {slide_ids} do not match: {attributes}'
-            attributes = attributes[0] # list[dict] -> dict
-
-        # Convert to tensors
-        assets = [{key: torch.from_numpy(val) for key, val in asset.items()} for asset in assets] # Now a list[dict[tensor]]
-        
-        # Apply preprocessing if specified
-        assets = [self._apply_preprocessor(asset) for asset in assets]
-
-        if self.combine_slides_per_patient:
-            assets = self._collate_slides(assets, method = 'concat') # Now a dict[tensor]
-            if self.bag_size is not None or self.shuffle:
-                assets = self._sample_dict_of_lists(assets)
-        else:
-            for i, slide_assets in enumerate(assets):
-                if self.bag_size is not None or self.shuffle:
-                    assets[i] = self._sample_dict_of_lists(slide_assets)
-            assets = self._collate_slides(assets, method = 'list') # Now a dict[list[tensor]]
-            
-        assets.update({'id': sample_id, # str
-                       'paths': [self.available_slide_paths[slide_id] for slide_id in slide_ids], # list[str], paths to patch features h5 for each slide
-                       'attributes': attributes # dict or list[dict]
-                       })
-        return assets
+    def get_dataloader(self, current_iter, fold, batch_size=None, num_workers=16):
+        subset_dataset = self.get_subset(current_iter, fold)
+        if subset_dataset is None:
+            return None
+        return torch.utils.data.DataLoader(
+            subset_dataset,
+            batch_size=len(subset_dataset) if batch_size is None else batch_size,
+            sampler=subset_dataset.get_datasampler('random'),
+            num_workers=num_workers,
+            persistent_workers=True,
+            pin_memory=True,
+            collate_fn=subset_dataset.collate_fn
+        )

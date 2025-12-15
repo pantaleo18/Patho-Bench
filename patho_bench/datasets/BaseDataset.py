@@ -226,7 +226,7 @@ class BaseDataset(torch.utils.data.Dataset, ConfigMixin):
         else:
             raise NotImplementedError(f'Sampler type {sampler} not implemented')
         
-    def get_dataloader(self, current_iter, fold, batch_size = None):
+    def get_dataloader(self, current_iter, fold, batch_size=None, num_workers=16):
         '''
         Returns a dataloader for the dataset.
         
@@ -242,9 +242,12 @@ class BaseDataset(torch.utils.data.Dataset, ConfigMixin):
         subset_dataset = self.get_subset(current_iter, fold)
         if subset_dataset is None:
             return None
-    
-        return torch.utils.data.DataLoader(subset_dataset,
-                                            batch_size = len(subset_dataset) if batch_size is None else batch_size,
-                                            sampler = subset_dataset.get_datasampler('random'),
-                                            num_workers = 4,
-                                            collate_fn = subset_dataset.collate_fn)
+        return torch.utils.data.DataLoader(
+            subset_dataset,
+            batch_size=len(subset_dataset) if batch_size is None else batch_size,
+            sampler=subset_dataset.get_datasampler('random'),
+            num_workers=num_workers,
+            persistent_workers=True,
+            pin_memory=True,
+            collate_fn=subset_dataset.collate_fn
+        )
