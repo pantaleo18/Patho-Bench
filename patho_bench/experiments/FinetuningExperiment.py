@@ -490,7 +490,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                     loss, info = self.model(batch, output='loss')
                     assert isinstance(loss, torch.Tensor), f"Loss must be a tensor, got {loss} instead"
                     assert isinstance(info, list), f"Info must be a list on CPU, got {info} instead"
-
+                
                 # Update trackers
                 all_losses.append(loss.cpu().detach().numpy())
                 all_info.extend(info)

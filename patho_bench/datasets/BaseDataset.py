@@ -4,6 +4,7 @@ import copy
 import h5py
 import os
 from patho_bench.config.ConfigMixin import ConfigMixin
+from patho_bench.debug.TimingTracker import TimingTracker
 
 """
 This is the BaseDataset class, which is inherited by all dataset classes.
@@ -138,7 +139,6 @@ class BaseDataset(torch.utils.data.Dataset, ConfigMixin):
 
         # Add current_iter to collated dict because it might be needed for loss functions
         collated['current_iter'] = self.current_iter
-
         return collated
     
     def recursive_collate(self, items):
@@ -226,15 +226,17 @@ class BaseDataset(torch.utils.data.Dataset, ConfigMixin):
         else:
             raise NotImplementedError(f'Sampler type {sampler} not implemented')
         
-    def get_dataloader(self, current_iter, fold, batch_size=None, num_workers=16):
+    def get_dataloader(self, current_iter, fold, batch_size=None, num_workers=4):
         '''
         Returns a dataloader for the dataset.
         
         Args:
             current_iter (int): Index of the current iteration
             fold (str): 'train', 'val', or 'test'
-            batch_size (int): Batch size. If None, will pass all samples in a single batch. Defaults to None.
-            
+            batch_size (int, optional): Batch size. Defaults to all samples in subset.
+            warmup (bool, optional): If True, run a warm-up batch to initialize workers and GPU. Defaults to True.
+            device (torch.device or str, optional): Device to move batch for warm-up. If None, batch stays on CPU.
+        
         Returns:
             dataloader (torch.utils.data.DataLoader): Dataloader for the dataset
         '''
@@ -242,12 +244,15 @@ class BaseDataset(torch.utils.data.Dataset, ConfigMixin):
         subset_dataset = self.get_subset(current_iter, fold)
         if subset_dataset is None:
             return None
+
         return torch.utils.data.DataLoader(
             subset_dataset,
             batch_size=len(subset_dataset) if batch_size is None else batch_size,
             sampler=subset_dataset.get_datasampler('random'),
-            num_workers=num_workers,
-            persistent_workers=True,
+            num_workers=4,
+            collate_fn=subset_dataset.collate_fn,
             pin_memory=True,
-            collate_fn=subset_dataset.collate_fn
+            # persistent_workers=True,
         )
+    
+    

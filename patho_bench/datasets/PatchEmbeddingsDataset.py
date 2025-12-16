@@ -2,6 +2,7 @@ from patho_bench.datasets.BaseDataset import BaseDataset
 import torch
 import os
 from IPython.display import display
+from patho_bench.debug.TimingTracker import TimingTracker
 
 """
 PatchEmbeddingsDataset loads patch-level features for a sample.
@@ -106,16 +107,186 @@ class PatchEmbeddingsDataset(BaseDataset):
         
         return sampled_assets
     
-    def get_dataloader(self, current_iter, fold, batch_size=None, num_workers=16):
-        subset_dataset = self.get_subset(current_iter, fold)
-        if subset_dataset is None:
-            return None
-        return torch.utils.data.DataLoader(
-            subset_dataset,
-            batch_size=len(subset_dataset) if batch_size is None else batch_size,
-            sampler=subset_dataset.get_datasampler('random'),
-            num_workers=num_workers,
-            persistent_workers=True,
-            pin_memory=True,
-            collate_fn=subset_dataset.collate_fn
+    def __getitem__(self, idx):
+        # -------------------------
+        # ID + slide lookup
+        # -------------------------
+        sample_id = self.ids[idx] if isinstance(idx, int) else idx
+        slide_ids = self.data[sample_id]['slide_id']
+
+        if len(slide_ids) != 1:
+            raise RuntimeError(
+                f"Expected exactly 1 slide per sample, got {len(slide_ids)} "
+                f"for sample {sample_id}. PORCODIO NOOOOO!"
+            )
+
+        slide_id = slide_ids[0]
+
+        if slide_id not in self.available_slide_paths:
+            raise ValueError(f"Slide {slide_id} not found in {self.load_from}")
+
+        # -------------------------
+        # H5 loading
+        # -------------------------
+        data, attrs = self.load_h5(
+            self.available_slide_paths[slide_id],
+            keys=['features', 'coords']
         )
+
+        attributes = {
+            'patch_size_level0': (
+                attrs['coords'].get('patch_size_level0', None)
+                if 'coords' in attrs else None
+            )
+        }
+
+        # -------------------------
+        # NumPy → Torch
+        # -------------------------
+        asset = {k: torch.from_numpy(v) for k, v in data.items()}
+
+        # -------------------------
+        # Preprocessing
+        # -------------------------
+        asset = self._apply_preprocessor(asset)
+
+        # -------------------------
+        # Sampling (bag_size, shuffle)
+        # -------------------------
+        if self.bag_size is not None or self.shuffle:
+            asset = self._sample_dict_of_lists(asset)
+
+        # -------------------------
+        # Metadata
+        # -------------------------
+        asset.update({
+            'id': sample_id,
+            'paths': [self.available_slide_paths[slide_id]],
+            'attributes': attributes
+        })
+
+        return asset
+
+    ##########DEBUG########################à
+    # def __getitem__(self, idx):
+    #     TT = TimingTracker()
+
+    #     t_total = TT.tic("getitem_total")
+
+    #     # -------------------------
+    #     # ID + slide lookup
+    #     # -------------------------
+    #     t = TT.tic("id_resolution")
+    #     sample_id = self.ids[idx] if isinstance(idx, int) else idx
+    #     slide_ids = self.data[sample_id]['slide_id']
+    #     TT.toc(t)
+
+    #     if len(slide_ids) == 0:
+    #         display(self.data)
+    #         raise ValueError(
+    #             f'No slides found for case ID {sample_id} '
+    #             f'in split with {len(self.data)} samples'
+    #         )
+
+    #     # -------------------------
+    #     # H5 loading
+    #     # -------------------------
+    #     t = TT.tic("h5_load_total")
+    #     assets = []
+    #     attributes = []
+
+    #     for slide_id in slide_ids:
+    #         if slide_id not in self.available_slide_paths:
+    #             raise ValueError(
+    #                 f"Slide {slide_id} not found in {self.load_from}."
+    #             )
+
+    #         t_slide = TT.tic("h5_load_single")
+    #         data, attrs = self.load_h5(
+    #             self.available_slide_paths[slide_id],
+    #             keys=['features', 'coords']
+    #         )
+    #         TT.toc(t_slide)
+
+    #         assets.append(data)
+    #         attributes.append({
+    #             'patch_size_level0': (
+    #                 attrs['coords']['patch_size_level0']
+    #                 if 'patch_size_level0' in attrs['coords']
+    #                 else None
+    #             )
+    #         })
+
+    #     TT.toc(t)
+
+    #     # -------------------------
+    #     # Attribute consistency
+    #     # -------------------------
+    #     t = TT.tic("attribute_check")
+    #     if self.combine_slides_per_patient:
+    #         assert all(
+    #             attr == attributes[0] for attr in attributes
+    #         ), (
+    #             f'Tried to combine slides for each patient, but attributes '
+    #             f'of slides {slide_ids} do not match: {attributes}'
+    #         )
+    #         attributes = attributes[0]
+    #     TT.toc(t)
+
+    #     # -------------------------
+    #     # NumPy → Torch
+    #     # -------------------------
+    #     t = TT.tic("numpy_to_tensor")
+    #     assets = [
+    #         {key: torch.from_numpy(val) for key, val in asset.items()}
+    #         for asset in assets
+    #     ]
+    #     TT.toc(t)
+
+    #     # -------------------------
+    #     # Preprocessing
+    #     # -------------------------
+    #     t = TT.tic("preprocessing")
+    #     assets = [self._apply_preprocessor(asset) for asset in assets]
+    #     TT.toc(t)
+
+    #     # -------------------------
+    #     # Collation + sampling
+    #     # -------------------------
+    #     if self.combine_slides_per_patient:
+    #         t = TT.tic("slide_collate_concat")
+    #         assets = self._collate_slides(assets, method='concat')
+    #         TT.toc(t)
+
+    #         if self.bag_size is not None or self.shuffle:
+    #             t = TT.tic("sampling_concat")
+    #             assets = self._sample_dict_of_lists(assets)
+    #             TT.toc(t)
+    #     else:
+    #         t = TT.tic("sampling_per_slide")
+    #         for i, slide_assets in enumerate(assets):
+    #             if self.bag_size is not None or self.shuffle:
+    #                 assets[i] = self._sample_dict_of_lists(slide_assets)
+    #         TT.toc(t)
+
+    #         t = TT.tic("slide_collate_list")
+    #         assets = self._collate_slides(assets, method='list')
+    #         TT.toc(t)
+
+    #     # -------------------------
+    #     # Metadata
+    #     # -------------------------
+    #     t = TT.tic("metadata_attach")
+    #     assets.update({
+    #         'id': sample_id,
+    #         'paths': [
+    #             self.available_slide_paths[slide_id]
+    #             for slide_id in slide_ids
+    #         ],
+    #         'attributes': attributes
+    #     })
+    #     TT.toc(t)
+
+    #     TT.toc(t_total)
+    #     TT.report("__gettitem__")
+    #     return assets
