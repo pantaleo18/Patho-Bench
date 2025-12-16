@@ -250,7 +250,8 @@ class BaseDataset(torch.utils.data.Dataset, ConfigMixin):
             sampler=subset_dataset.get_datasampler('random'),
             num_workers=4,
             collate_fn=subset_dataset.collate_fn,
-            pin_memory=True  # consigliato se trasferisci batch su GPU
+            pin_memory=True,
+            persistent_workers=True,
         )
     
     
