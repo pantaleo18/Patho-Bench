@@ -4,7 +4,6 @@ import copy
 import h5py
 import os
 from patho_bench.config.ConfigMixin import ConfigMixin
-from patho_bench.debug.TimingTracker import TimingTracker
 
 """
 This is the BaseDataset class, which is inherited by all dataset classes.
@@ -249,10 +248,10 @@ class BaseDataset(torch.utils.data.Dataset, ConfigMixin):
             subset_dataset,
             batch_size=len(subset_dataset) if batch_size is None else batch_size,
             sampler=subset_dataset.get_datasampler('random'),
-            num_workers=4,
+            num_workers=int(min(batch_size // 2, os.cpu_count() // 4)),
             collate_fn=subset_dataset.collate_fn,
             pin_memory=True,
-            # persistent_workers=True,
+            persistent_workers=True,
         )
     
     
