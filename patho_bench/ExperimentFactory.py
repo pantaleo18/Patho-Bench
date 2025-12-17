@@ -359,8 +359,18 @@ class ExperimentFactory:
             scheduler_config = {'type': 'cosine',
                                 'eta_min': 1e-8,
                                 'step_on': 'accumulation-step'} 
+        elif scheduler_type == 'step':
+            scheduler_config = {
+                'type': 'step',
+                'gamma': 0.1,
+                'milestones' : [2,5,15,30],
+                'step_on': 'epoch',
+            }
         else:
-            raise NotImplementedError(f'Scheduler type {scheduler_type} not yet implemented. Please choose from "cosine" or "gigapath".')
+            raise NotImplementedError(
+                f'Scheduler type {scheduler_type} not yet implemented. '
+                'Please choose from "cosine", "step", or "gigapath".'
+            )
 
         ###### Configure optimizer ################################################################
         if optimizer_type == 'gigapath':
@@ -373,11 +383,23 @@ class ExperimentFactory:
                                                      'weight_decay': weight_decay},
                                 }
         elif optimizer_type == 'AdamW':
-            optimizer_config = {'type': 'AdamW',
-                                'base_lr': base_learning_rate,
-                                'weight_decay': weight_decay}
+            optimizer_config = {
+                'type': 'AdamW',
+                'base_lr': base_learning_rate,
+                'weight_decay': weight_decay
+            }
+        elif optimizer_type == 'Adam':
+            optimizer_config = {
+                'type': 'Adam',
+                'base_lr': base_learning_rate,
+                'weight_decay': weight_decay
+            }
         else:
-            raise NotImplementedError(f'Optimizer type {optimizer_type} not yet implemented. Please choose from "AdamW" or "gigapath".')
+            raise NotImplementedError(
+                f'Optimizer type {optimizer_type} not yet implemented. '
+                'Please choose from "Adam", "AdamW", or "gigapath".'
+            )
+
         
         if isinstance(color_map,str):
             with open(color_map,"r") as fp:

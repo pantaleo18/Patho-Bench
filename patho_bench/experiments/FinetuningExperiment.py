@@ -611,10 +611,11 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                     patience=self.scheduler_config['patience'],
                     verbose=True)
             elif self.scheduler_config['type'] == 'step':
-                return torch.optim.lr_scheduler.StepLR(
+                return torch.optim.lr_scheduler.MultiStepLR(
                     self.optimizer,
-                    step_size=self.scheduler_config['step_size'],
-                    gamma=self.scheduler_config['gamma'])
+                    milestones=self.scheduler_config['milestones'],
+                    gamma=self.scheduler_config['gamma']
+                )
             elif self.scheduler_config['type'] == 'cosine':
                 num_batches = len(self.dataloaders['train'])
                 steps_per_epoch = math.ceil(num_batches / self.accumulation_steps)
