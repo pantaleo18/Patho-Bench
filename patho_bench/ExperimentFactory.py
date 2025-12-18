@@ -1,4 +1,5 @@
 import os
+import shutil
 import numpy as np
 import torch
 from torch import nn
@@ -8,12 +9,14 @@ from patho_bench.experiments.CoxNetExperiment import CoxNetExperiment
 from patho_bench.experiments.FinetuningExperiment import FinetuningExperiment
 from patho_bench.experiments.GeneralizabilityExperimentWrapper import GeneralizabilityExperimentWrapper
 from patho_bench.TrainableSlideEncoder import TrainableSlideEncoder
+from patho_bench.im4MECTrainableSlideClassifier import im4MECTrainableSlideClassifier
 from patho_bench.SplitFactory import SplitFactory
 from patho_bench.DatasetFactory import DatasetFactory
 from patho_bench.helpers.GPUManager import GPUManager
 from patho_bench.optim.NLLSurvLoss import NLLSurvLoss
 from sklearn.utils.class_weight import compute_class_weight
 from trident.slide_encoder_models.load import encoder_factory
+import warnings
 import json
 
 """
@@ -262,6 +265,8 @@ class ExperimentFactory:
                  layer_decay = None,
                  gpu = -1,
                  batch_size = 1, 
+                 scheduler_config : dict = None,
+                 optimizer_config : dict = None,
                  external_split: str = None,
                  external_saveto: str = None,
                  num_bootstraps: int = 100,
@@ -273,49 +278,19 @@ class ExperimentFactory:
                  patience : int = 3,
                  halt_training_on_folder_early_stop : bool = False
         ):
-        '''
-        Create finetuning experiment, where the input is a bag of patch embeddings.
-
-        Args:
-            split: str, path to local split file.
-            task_config: str, path to task config file.
-            patch_embeddings_dirs: list of str, paths to folder(s) containing patch embeddings for given experiment. Only needed if pooled_embeddings_dir is empty.
-            saveto: str, path to save the results
-            combine_slides_per_patient: bool, Whether to combine patches from multiple slides when pooling at case_id level. If False, will pool each slide independently.
-            model_name: str, name of the model to use for pooling. Only needed if pooled_embeddings_dir is empty.
-            
-            bag_size: int or None, number of patches per bag
-            base_learning_rate: float or None, base learning rate
-            gradient_accumulation: int or None, gradient accumulation steps
-            weight_decay: float or None, weight decay
-            num_epochs: int or None, number of epochs
-            scheduler_type: str, type of scheduler. Can be 'cosine' or 'gigapath'
-            optimizer_type: str, type of optimizer. Can be 'AdamW' or 'gigapath'
-            balanced: bool, whether to use balanced class weights
-            save_which_checkpoints: str, which checkpoints to save
-            model_kwargs: dict, additional arguments to pass to the model constructor
-            layer_decay: float or None, layer decay for gigapath optimizer
-            gpu: int, GPU id. If -1, the best available GPU is used.
-            batch_size: int, batch size. Only batch_size = 1 is supported for finetuning for now
-            external_split: str, path to local split file for external testing.
-            external_saveto: str, path to save the results of external testing. Only needed if external_split is not None.
-            num_bootstraps: int, number of bootstraps. Default is 100.
-            color_map : str | dict, label-color dictionary. 
-            lr_logging_interval : int, Marica Vagni added: ensure LR gets logged
-            early_stop : bool, halt the training when validation performance stop improving (defualt = True). Use `patience` to regulate it.
-            patience : int, define how many epochs to wait for improvement before stopping (default = 3).
-        '''
         
         ###### Get dataset ################################################################
-        split, task_info, internal_dataset = ExperimentFactory._prepare_internal_dataset(split_path=split,
-                                                                                    task_config=task_config,
-                                                                                    saveto=saveto,
-                                                                                    combine_slides_per_patient=combine_slides_per_patient,
-                                                                                    combine_train_val=COMBINE_TRAIN_VAL,
-                                                                                    patch_embeddings_dirs=patch_embeddings_dirs,
-                                                                                    gpu=gpu,
-                                                                                    bag_size=bag_size)
-        
+        split, task_info, internal_dataset = ExperimentFactory._prepare_internal_dataset(
+            split_path=split,
+            task_config=task_config,
+            saveto=saveto,
+            combine_slides_per_patient=combine_slides_per_patient,
+            combine_train_val=COMBINE_TRAIN_VAL,
+            patch_embeddings_dirs=patch_embeddings_dirs,
+            gpu=gpu,
+            bag_size=bag_size
+        )
+
         task_name = task_info['task_col']
 
         ###### Get loss ################################################################
@@ -333,7 +308,7 @@ class ExperimentFactory:
 
         slide_encoder = encoder_factory(
             model_name_clean, 
-            pretrained = False if 'randominit' in model_name or model_name.startswith('abmil') else True, 
+            pretrained = False, 
             freeze=False, 
             **model_kwargs
         )
@@ -348,59 +323,19 @@ class ExperimentFactory:
             'label_dict' : task_info['label_dict'],
         }
 
-        ###### Configure scheduler ################################################################
-        if scheduler_type == 'gigapath':
-            from patho_bench.optim.GigaPathOptim import CustomLRScheduler
-            scheduler_config = {'type': CustomLRScheduler,
-                                'warmup_epochs': 1,
-                                'min_lr': 0.000001,
-                                'step_on': 'accumulation-step'}
-        elif scheduler_type == 'cosine':
-            scheduler_config = {'type': 'cosine',
-                                'eta_min': 1e-8,
-                                'step_on': 'accumulation-step'} 
-        elif scheduler_type == 'step':
-            scheduler_config = {
-                'type': 'step',
-                'gamma': 0.1,
-                'milestones' : [2,5,15,30],
-                'step_on': 'epoch',
-            }
-        else:
-            raise NotImplementedError(
-                f'Scheduler type {scheduler_type} not yet implemented. '
-                'Please choose from "cosine", "step", or "gigapath".'
+        if scheduler_config is None:
+            scheduler_config = get_scheduler_basic_config(scheduler_type)
+
+        if optimizer_config is None:
+            optimizer_config = get_optimizer_config(
+                optimizer_type,
+                base_learning_rate=base_learning_rate,
+                batch_size=batch_size,
+                gradient_accumulation=gradient_accumulation,
+                layer_decay=layer_decay,
+                weight_decay=weight_decay
             )
 
-        ###### Configure optimizer ################################################################
-        if optimizer_type == 'gigapath':
-            from patho_bench.optim.GigaPathOptim import param_groups_lrd
-            optimizer_config = {'type': 'AdamW',
-                                'base_lr': base_learning_rate * ((batch_size * gradient_accumulation) / 256),
-                                'get_param_groups': param_groups_lrd,
-                                'param_group_args': {'layer_decay': layer_decay,
-                                                     'no_weight_decay_list': [],
-                                                     'weight_decay': weight_decay},
-                                }
-        elif optimizer_type == 'AdamW':
-            optimizer_config = {
-                'type': 'AdamW',
-                'base_lr': base_learning_rate,
-                'weight_decay': weight_decay
-            }
-        elif optimizer_type == 'Adam':
-            optimizer_config = {
-                'type': 'Adam',
-                'base_lr': base_learning_rate,
-                'weight_decay': weight_decay
-            }
-        else:
-            raise NotImplementedError(
-                f'Optimizer type {optimizer_type} not yet implemented. '
-                'Please choose from "Adam", "AdamW", or "gigapath".'
-            )
-
-        
         if isinstance(color_map,str):
             with open(color_map,"r") as fp:
                 color_map = json.load(fp)
@@ -410,7 +345,7 @@ class ExperimentFactory:
             task_type = task_info['task_type'],
             dataset = internal_dataset,
             batch_size = batch_size,
-            model_constructor = TrainableSlideEncoder,
+            model_constructor = TrainableSlideEncoder if model_name_clean is not "im4MEC" else im4MECTrainableSlideClassifier,
             model_kwargs = model_kwargs,
             num_epochs = num_epochs, # if nshots == 'all' else 500//(nshots * num_classes),
             accumulation_steps = gradient_accumulation,
@@ -520,32 +455,31 @@ class ExperimentFactory:
         for i, hyperparams in enumerate(generate_arg_combinations(sweep_over)):
             
             # Create a unique experiment directory from the hyperparameters.
-            this_config_path = os.path.join(saveto_root, str(i))
-            os.makedirs(this_config_path, exist_ok=True)
+            args['saveto'] = setup_folder_configs(
+                saveto_root=saveto_root,
+                hyperparams=hyperparams,
+                id = i
+            )
 
-            # Save hyperparameters to hyperparameters.json
-            with open(os.path.join(this_config_path, 'hyperparameters.json'), 'w') as f:
-                json.dump(hyperparams, f, indent=4)
-
-            args['saveto'] = this_config_path
+            if args['saveto'] is not None:
+                if experiment_type == 'finetune':
+                    experiment = ExperimentFactory.finetune(**args, **hyperparams)
+                else: 
+                    args['pooled_embeddings_dir'] = pooled_embeddings_dir
+                    args['external_pooled_embeddings_dir'] = external_pooled_embeddings_dir
+                    if experiment_type == 'linprobe':
+                        experiment = ExperimentFactory.linprobe(**args, **hyperparams)
+                    elif experiment_type == 'retrieval':
+                        experiment = ExperimentFactory.retrieval(**args, **hyperparams)
+                    elif experiment_type == 'coxnet':
+                        experiment = ExperimentFactory.coxnet(**args, **hyperparams)
+                    else:
+                        raise NotImplementedError(
+                            f'Experiment type {experiment_type} not recognized. Please choose from "finetune", "linprobe", "retrieval", or "coxnet".'
+                        )
+                
+                experiments_list.append(experiment.train())
             
-            if experiment_type == 'finetune':
-                # I only worked with this, I didn't test the others.
-                experiment = ExperimentFactory.finetune(**args, **hyperparams)
-            else: 
-                args['pooled_embeddings_dir'] = pooled_embeddings_dir
-                args['external_pooled_embeddings_dir'] = external_pooled_embeddings_dir
-                if experiment_type == 'linprobe':
-                    experiment = ExperimentFactory.linprobe(**args, **hyperparams)
-                elif experiment_type == 'retrieval':
-                    experiment = ExperimentFactory.retrieval(**args, **hyperparams)
-                elif experiment_type == 'coxnet':
-                    experiment = ExperimentFactory.coxnet(**args, **hyperparams)
-                else:
-                    raise NotImplementedError(
-                        f'Experiment type {experiment_type} not recognized. Please choose from "finetune", "linprobe", "retrieval", or "coxnet".'
-                    )
-            experiments_list.append((experiment.train(), experiment.test()))
         return experiments_list
 
     @staticmethod
@@ -688,3 +622,144 @@ def make_list(x):
     Convert input to list if it is not already a list.
     '''
     return x if isinstance(x, list) else [x]
+
+def get_scheduler_basic_config(scheduler_type : str):
+            ###### Configure scheduler ################################################################
+        if scheduler_type == 'gigapath':
+            from patho_bench.optim.GigaPathOptim import CustomLRScheduler
+            scheduler_config = {
+                'type': CustomLRScheduler,
+                'warmup_epochs': 1,
+                'min_lr': 0.000001,
+                'step_on': 'accumulation-step'
+            }
+        elif scheduler_type == 'cosine':
+            scheduler_config = {
+                'type': 'cosine',
+                'eta_min': 1e-8,
+                'step_on': 'accumulation-step'
+            } 
+        elif scheduler_type == 'step':
+            scheduler_config = {
+                'type': 'step',
+                'gamma': 0.1,
+                'milestones' : [2,5,15,27],
+                'step_on': 'epoch',
+            }
+        elif scheduler_type == "plateau":
+            scheduler_config = {
+                'type' : 'plateau',
+                'mode' : 'min',
+                'factor' : 1e-1,
+                'patience' : 0,
+                'threshold' : 1e-4,
+                'step_on' : 'val',
+            }
+        else:
+            raise NotImplementedError(
+                f'Scheduler type {scheduler_type} not yet implemented. '
+                'Please choose from "cosine", "step", or "gigapath".'
+            )
+        return scheduler_config
+
+def get_optimizer_config(
+        optimizer_type : str,
+        base_learning_rate : float,
+        batch_size : int, 
+        gradient_accumulation: int,
+        layer_decay : float,
+        weight_decay : float
+    ):
+    if optimizer_type == 'gigapath':
+        from patho_bench.optim.GigaPathOptim import param_groups_lrd
+        optimizer_config = {'type': 'AdamW',
+                            'base_lr': base_learning_rate * ((batch_size * gradient_accumulation) / 256),
+                            'get_param_groups': param_groups_lrd,
+                            'param_group_args': {'layer_decay': layer_decay,
+                                                    'no_weight_decay_list': [],
+                                                    'weight_decay': weight_decay},
+                            }
+    elif optimizer_type == 'AdamW':
+        optimizer_config = {
+            'type': 'AdamW',
+            'base_lr': base_learning_rate,
+            'weight_decay': weight_decay
+        }
+    elif optimizer_type == 'Adam':
+        optimizer_config = {
+            'type': 'Adam',
+            'base_lr': base_learning_rate,
+            'weight_decay': weight_decay
+        }
+    else:
+        raise NotImplementedError(
+            f'Optimizer type {optimizer_type} not yet implemented. '
+            'Please choose from "Adam", "AdamW", or "gigapath".'
+        )
+
+    return optimizer_config
+
+def deep_dict_exact_equal(d1, d2):
+    """
+    Confronta due dizionari annidati esattamente.
+    Restituisce True solo se chiavi e valori coincidono, inclusi sottodizionari.
+    """
+    if type(d1) != type(d2):
+        return False
+    
+    if isinstance(d1, dict):
+        if d1.keys() != d2.keys():
+            return False
+        for k in d1:
+            if not deep_dict_exact_equal(d1[k], d2[k]):
+                return False
+        return True
+    
+    elif isinstance(d1, list):
+        if len(d1) != len(d2):
+            return False
+        return all(deep_dict_exact_equal(a, b) for a, b in zip(d1, d2))
+    
+    else:
+        return d1 == d2 
+    
+def setup_folder_configs(saveto_root,id,hyperparams):
+
+    # Directory per questa configurazione
+    this_config_path = os.path.join(saveto_root, str(id))
+
+    if os.path.exists(this_config_path):
+        hyper_file = os.path.join(this_config_path, 'hyperparameters.json')
+        if os.path.exists(hyper_file):
+            with open(hyper_file, 'r') as f:
+                saved_hyperparams = json.load(f)
+
+            if deep_dict_exact_equal(saved_hyperparams, hyperparams):
+                warnings.warn(
+                    f"Exact same configuration already exists at {this_config_path}.\n"
+                    f"Skipping this run.\n{hyperparams = }"
+                )
+                return None
+            else:
+                warnings.warn(
+                    f"Folder {this_config_path} exists but configuration differs. "
+                    f"Deleting folder and creating a new one.\n"
+                    f"Saved hyperparams: {saved_hyperparams}\n"
+                    f"Current hyperparams: {hyperparams}"
+                )
+                shutil.rmtree(this_config_path)  # rimuovi la vecchia cartella
+                os.makedirs(this_config_path)
+        else:
+            warnings.warn(
+                f"{this_config_path} exists but no hyperparameters.json found. Overwriting."
+            )
+            shutil.rmtree(this_config_path)
+            os.makedirs(this_config_path)
+    else:
+        os.makedirs(this_config_path)
+
+    # Save hyperparameters to hyperparameters.json
+    with open(os.path.join(this_config_path, 'hyperparameters.json'), 'w') as f:
+        json.dump(hyperparams, f, indent=4)
+    
+    return this_config_path

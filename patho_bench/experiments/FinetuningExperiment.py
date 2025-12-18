@@ -166,6 +166,8 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             impatient_counter = 0
             prev_gen_error = float('inf') 
             early_stop_trigger = False
+
+            self.epoch_times = {mode: [] for mode in ['train', 'val']}
             
             for self.current_epoch in self.loop:
 
@@ -186,6 +188,22 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                         new_best_loss[self.mode], epoch_loss[self.mode] = \
                             self._run_single_epoch()
                         end = time.time()
+                        # --- dopo il run_single_epoch() ---
+                        duration = end - start
+
+                        # Salva info per l'epoch corrente e il mode
+                        self.epoch_times[self.mode].append({
+                            "epoch": self.current_epoch,
+                            "start": start,
+                            "stop": end,
+                            "duration": duration,
+                        })
+
+                        # Salvataggio JSON incrementale (ad ogni epoch)
+                        json_path = os.path.join(self.results_dir, "epoch_times.json")
+                        with open(json_path, "w") as f:
+                            json.dump(self.epoch_times, f, indent=4)
+
                         
                         # Save progress to file
                         with open(os.path.join(self.results_dir, 'progress.txt'), 'a') as f:
@@ -227,14 +245,67 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                 
                 prev_gen_error = current_gen_err
                 
-            # DANGEROUS AND PLANNED TO BE DEPRECATED: stops the whole training if this condition
+            # TO BE DEPRECATED: stops the whole training if this condition
             # is met.
             if self.early_stop and early_stop_trigger and self.halt_training_on_folder_early_stop:
-                warnings.warn(f"Halting training procedure on folder {self.current_epoch}")
-                break
-                            
+                warnings.warn(f"halt_training_on_early_stop is deprecated {self.current_epoch}")
+
+            # === VALIDAZIONE IMMEDIATA DEL FOLD ===
+            self._eval_single_fold(fold_idx=self.current_iter)
+              
         # After we finish all folds, try running a final "validation metrics" pass
         self.validate()
+
+    def _eval_single_fold(self, fold_idx: int):
+        """
+        Evaluate the model on a single fold for the given split ('val' or 'test').
+        Computes and saves per-fold metrics.
+        """
+
+        # Carica dataloader del fold
+        eval_dataloader = self.dataloaders.get('val')
+        if eval_dataloader is None:
+            return None
+
+        # Directory checkpoint del fold
+        checkpoint_dir = os.path.join(self.results_dir, 'checkpoints', f'fold_{fold_idx}')
+        try:
+            ckpt_path = self._pick_checkpoint(checkpoint_dir)
+        except FileNotFoundError:
+            warnings.warn(
+                f"No checkpoint found for fold {fold_idx + 1}. Skipping evaluation."
+            )
+            return None
+
+        # Load e freeze modello
+        try:
+            model = self.model_constructor(**self.model_kwargs, device=self.device)
+            model = self.load_checkpoint(model, ckpt_path)
+            model = self.freeze(model)
+        except Exception as e:
+            warnings.warn(
+                f"Failed to load checkpoint for fold {fold_idx + 1}: {e}. Skipping."
+            )
+            return None
+
+        # Accumula predizioni
+        labels, preds, ids = self._accumulate_preds(eval_dataloader, model)
+
+        # Caso fold singolo / dataset minuscolo → rimandiamo aggregazione
+        if len(eval_dataloader.dataset) == 1 or self.dataset.num_folds == 1:
+            return {
+                "labels": labels,
+                "preds": preds
+            }
+
+        # Caso standard: salva metriche per-fold
+        per_fold_save_dir = os.path.join(
+            self.results_dir, f'val_metrics', f'fold_{fold_idx}'
+        )
+        os.makedirs(per_fold_save_dir, exist_ok=True)
+
+        scores = self._compute_metrics(labels, preds, per_fold_save_dir, ids=ids)
+        return scores
 
     def test(self):
         '''
@@ -244,10 +315,49 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
 
     def validate(self):
         """
-        Evaluate the model on the validation set for each fold.
+        Aggregate validation metrics across all folds and produce a summary with
+        mean, std, SE, and a nicely formatted string, exactly like in _eval.
         """
-        self._eval(split='val')
+        all_scores_across_folds = []
+
+        for fold_idx in range(self.dataset.num_folds):
+            metrics_path = os.path.join(
+                self.results_dir, 'val_metrics', f'fold_{fold_idx}', 'metrics.json'
+            )
+            if os.path.exists(metrics_path):
+                with open(metrics_path, 'r') as f:
+                    scores = json.load(f)
+                all_scores_across_folds.append(scores['overall'])  # Prendi solo il dict 'overall'
+
+        if not all_scores_across_folds:
+            warnings.warn("No per-fold metrics found. Summary cannot be computed.")
+            return
+
+        # Aggrega le metriche
+        summary = {}
+        keys = all_scores_across_folds[0].keys()
+        scores_array = {k: np.array([fold[k] for fold in all_scores_across_folds], dtype=float)
+                        for k in keys}
+
+        for k in keys:
+            vals = scores_array[k]
+            mean = float(np.mean(vals))
+            std = float(np.std(vals, ddof=1))  # campionario
+            se = float(std / np.sqrt(len(vals)))
+            summary[k] = {
+                "mean": mean,
+                "std": std,
+                "se": se,
+                "formatted": f"{mean:.3f} ± {std:.3f} ± {se:.3f}"
+            }
+
+        # Salva summary finale
+        summary_path = os.path.join(self.results_dir, 'val_metrics_summary.json')
+        with open(summary_path, 'w') as f:
+            json.dump(summary, f, indent=4)
         
+        print(f"Validation summary saved to {summary_path}")
+
     def _eval(self, split: str):
         """
         Shared evaluation logic for either 'val' or 'test'. Similar to 
@@ -551,6 +661,8 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
         # Update scheduler at end of epoch if step_on is 'epoch'
         if self.mode == 'train' and self.scheduler_config and self.scheduler_config['step_on'] == 'epoch' and not optimizer_skipped:
             self.scheduler.step()
+            if self.lr_logging_interval is not None:
+                self.log_lr(self.current_epoch) 
 
         # Save current epoch metrics
         self.current_epoch_metrics = {
@@ -558,6 +670,12 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             "info": all_info,
             "avg_loss": np.mean(all_losses)
         }
+
+        # Update the scheduler during validation if the policy is plateau
+        if self.mode == 'val' and self.scheduler_config.get('type',None) == 'plateau':
+            self.scheduler.step(self.current_epoch_metrics["avg_loss"])
+            if self.lr_logging_interval is not None:
+                self.log_lr(self.current_epoch) 
 
         self.compute_extra_metrics()
 
@@ -609,7 +727,8 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                     mode=self.scheduler_config['mode'],
                     factor=self.scheduler_config['factor'],
                     patience=self.scheduler_config['patience'],
-                    verbose=True)
+                    threshold = self.scheduler_config['threshold']
+                    )
             elif self.scheduler_config['type'] == 'step':
                 return torch.optim.lr_scheduler.MultiStepLR(
                     self.optimizer,

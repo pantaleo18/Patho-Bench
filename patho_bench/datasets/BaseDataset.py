@@ -248,7 +248,7 @@ class BaseDataset(torch.utils.data.Dataset, ConfigMixin):
             subset_dataset,
             batch_size=len(subset_dataset) if batch_size is None else batch_size,
             sampler=subset_dataset.get_datasampler('random'),
-            num_workers=int(min(batch_size // 2, os.cpu_count() // 4)),
+            num_workers=int(max(4,min(batch_size // 2, os.cpu_count() // 4))),
             collate_fn=subset_dataset.collate_fn,
             pin_memory=True,
             persistent_workers=True,
