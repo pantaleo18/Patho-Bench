@@ -713,13 +713,13 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             scores = self._compute_metrics(labels, preds, per_epoch_save_dir, ids=ids)
             macro_ovr_auc = scores["macro-ovr-auc"]
             self.current_epoch_metrics["macro-ovr-auc"] = macro_ovr_auc
+            self.log_macro_auc_ovr(self.current_epoch,macro_ovr_auc)  
 
             if avg_loss < self.best_val_loss:
                 self.best_val_loss = avg_loss
                 new_best_loss = True
             if macro_ovr_auc > self.best_macro_ovr_auc:
                 self.best_macro_ovr_auc = macro_ovr_auc
-                self.log_macro_auc_ovr(self.current_epoch,macro_ovr_auc) 
                 new_best_macro_ovr_auc = True
             if  self.scheduler_config.get('type',None) == 'plateau':
                 self.scheduler.step(macro_ovr_auc)
