@@ -45,6 +45,9 @@ class LoggingMixin:
             "lr": TrainingMetricsLogger(
                 save_dir, "lr", step_on="optimizer-step"
             ), 
+            "macro-auc-ovr": TrainingMetricsLogger(
+                save_dir, "macro_auc-ovr", step_on="epoch"
+            ), 
             "smooth_rank": TrainingMetricsLogger(
                 save_dir, "smooth_rank", step_on="epoch"
             ),
@@ -60,6 +63,17 @@ class LoggingMixin:
             self.scheduler (torch.optim.lr_scheduler): Learning rate scheduler
         """
         self.loggers["lr"].step({self.mode: self.scheduler.get_last_lr()[0]}, step)
+
+    def log_macro_auc_ovr(self,step,metric):
+        """
+        Log learning rate to dashboard. This method can be overwritten in child classes to log learning rate differently.
+
+        You may find the following attributes useful:
+            self.current_epoch (int): Current epoch idx
+            self.mode (str): Mode of operation, either 'train', 'val', or 'test'.
+            self.scheduler (torch.optim.lr_scheduler): Learning rate scheduler
+        """
+        self.loggers["macro-auc-ovr"].step({self.mode : metric}, step)
 
     def log_loss(self, step):
         """

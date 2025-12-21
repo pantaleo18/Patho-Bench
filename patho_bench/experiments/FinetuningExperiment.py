@@ -253,7 +253,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
 
             # === VALIDAZIONE IMMEDIATA DEL FOLD ===
             scores = self._eval_single_fold(fold_idx=self.current_iter)
-            print(f"{self.current_fold}-th fold performance: {scores}")
+            print(f"{self.current_iter}-th fold performance:\n{scores}")
               
         json_path = os.path.join(self.results_dir, "durations.json")
         with open(json_path, "w") as f:
@@ -696,30 +696,35 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             if self.lr_logging_interval is not None:
                 self.log_lr(self.current_epoch) 
 
-                # Update best val loss
-        if self.mode == 'val':
-            avg_loss = np.mean(all_losses)
-            labels, preds, ids = self._accumulate_preds(self.dataloaders[self.mode], self.model)
-            per_epoch_save_dir = os.path.join(self.results_dir,'current_epoch_metrics')
-            os.makedirs(per_epoch_save_dir, exist_ok=True)
-            scores = self._compute_metrics(labels, preds, per_epoch_save_dir, ids=ids)
-            if avg_loss < self.best_val_loss:
-                self.best_val_loss = avg_loss
-                new_best_loss = True
-            if scores["macro-ovr-auc"] > new_best_macro_ovr_auc:
-                self.best_macro_ovr_auc = scores["macro-ovr-auc"]
-                new_best_macro_ovr_auc = True
-            if  self.scheduler_config.get('type',None) == 'plateau':
-                self.scheduler.step(scores["macro-ovr-auc"])
-                if self.lr_logging_interval is not None:
-                    self.log_lr(self.current_epoch) 
-
         # Save current epoch metrics
         self.current_epoch_metrics = {
             "loss": all_losses,
             "info": all_info,
             "avg_loss": np.mean(all_losses)
         }
+
+        # Update best val loss
+        if self.mode == 'val':
+            avg_loss = np.mean(all_losses)
+            labels, preds, ids = self._accumulate_preds(self.dataloaders[self.mode], self.model)
+            per_epoch_save_dir = os.path.join(self.results_dir,'current_epoch_metrics')
+            os.makedirs(per_epoch_save_dir, exist_ok=True)
+            
+            scores = self._compute_metrics(labels, preds, per_epoch_save_dir, ids=ids)
+            macro_ovr_auc = scores["macro-ovr-auc"]
+            self.current_epoch_metrics["macro-ovr-auc"] = macro_ovr_auc
+
+            if avg_loss < self.best_val_loss:
+                self.best_val_loss = avg_loss
+                new_best_loss = True
+            if macro_ovr_auc > self.best_macro_ovr_auc:
+                self.best_macro_ovr_auc = macro_ovr_auc
+                self.log_macro_auc_ovr(self.current_epoch,macro_ovr_auc) 
+                new_best_macro_ovr_auc = True
+            if  self.scheduler_config.get('type',None) == 'plateau':
+                self.scheduler.step(macro_ovr_auc)
+                if self.lr_logging_interval is not None:
+                    self.log_lr(self.current_epoch) 
 
         self.compute_extra_metrics()
 
@@ -748,6 +753,9 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
 
         self.log_loss(self.current_epoch) # Log loss to dashboard on epoch end
         self.log_smooth_rank(self.current_epoch) # Log smooth rank to dashboard on epoch end
+
+        # Save current epoch's metrics
+        # self.save_current_epoch_metrics(os.path.join(self.results_dir,"epoch_metrics.json"))
 
         return new_best_loss, self.current_epoch_metrics['avg_loss']
     
