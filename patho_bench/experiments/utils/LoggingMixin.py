@@ -136,7 +136,7 @@ class LoggingMixin:
         os.makedirs(save_dir, exist_ok=True)
 
         # Delete previous best checkpoint
-        if method in ["best-val-loss", "best-smooth-rank"]:
+        if method in ["best-val-loss", "best-smooth-rank", "best-macro-ovr-auc"]:
             existing_checkpoints = [
                 os.path.join(save_dir, checkpoint)
                 for checkpoint in os.listdir(save_dir)

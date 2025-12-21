@@ -345,7 +345,7 @@ class ExperimentFactory:
             task_type = task_info['task_type'],
             dataset = internal_dataset,
             batch_size = batch_size,
-            model_constructor = TrainableSlideEncoder if model_name_clean is not "im4MEC" else im4MECTrainableSlideClassifier,
+            model_constructor = TrainableSlideEncoder if model_name_clean != "im4MEC" else im4MECTrainableSlideClassifier,
             model_kwargs = model_kwargs,
             num_epochs = num_epochs, # if nshots == 'all' else 500//(nshots * num_classes),
             accumulation_steps = gradient_accumulation,
@@ -649,7 +649,7 @@ def get_scheduler_basic_config(scheduler_type : str):
         elif scheduler_type == "plateau":
             scheduler_config = {
                 'type' : 'plateau',
-                'mode' : 'min',
+                'mode' : 'max',
                 'factor' : 1e-1,
                 'patience' : 0,
                 'threshold' : 1e-4,

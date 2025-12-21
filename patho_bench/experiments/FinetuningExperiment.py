@@ -2,6 +2,7 @@ import os
 import numpy as np
 import torch
 import time
+from datetime import timedelta
 from tqdm import tqdm
 import json
 import warnings
@@ -102,6 +103,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
         self.early_stop_policy = early_stop_policy
         self.patience = patience
         self.halt_training_on_folder_early_stop = halt_training_on_folder_early_stop
+        self.best_macro_ovr_auc = -1
         
         # Set kwargs as extra attributes for saving in config.json
         for key, value in kwargs.items():
@@ -117,7 +119,8 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
         '''
         print(f'\nExperiment dir: {self.results_dir}')
         self.save_config(os.path.join(self.results_dir, 'config.json'))
-        self.train_results_dir = self.results_dir  # Store a copy of the training results dir for loading model in self.test(), in case want to save test results in a different directory
+        self.train_results_dir = self.results_dir 
+        self.durations = []
         
         ### Loop through folds
         for self.current_iter in range(self.dataset.num_folds):
@@ -166,14 +169,13 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             impatient_counter = 0
             prev_gen_error = float('inf') 
             early_stop_trigger = False
-
-            self.epoch_times = {mode: [] for mode in ['train', 'val']}
             
             for self.current_epoch in self.loop:
 
                 # epoch = 0,1,...,num_epochs
                 epoch_loss = {'train' : None, 'val' : None }
                 new_best_loss = {'train' : None, 'val' : None}
+                total_duration = {'train': 0, 'val': 0 }
 
                 for self.mode in ['train', 'val']:
                 # ON BOTH SPLITS OF THIS DEVELOPMENT FOLDER
@@ -181,7 +183,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                         
                         # Progresses
                         if self.view_progress == 'bar':
-                            self.loop.set_description(f'      Epoch {self.current_epoch} {self.mode}')
+                            self.loop.set_description(f'Epoch {self.current_epoch} {self.mode}')
 
                         # Epoch core
                         start = time.time()
@@ -190,28 +192,27 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                         end = time.time()
                         # --- dopo il run_single_epoch() ---
                         duration = end - start
+                        duration_str = str(timedelta(seconds=int(duration)))
 
-                        # Salva info per l'epoch corrente e il mode
-                        self.epoch_times[self.mode].append({
-                            "epoch": self.current_epoch,
-                            "start": start,
-                            "stop": end,
-                            "duration": duration,
-                        })
-
-                        # Salvataggio JSON incrementale (ad ogni epoch)
-                        json_path = os.path.join(self.results_dir, "epoch_times.json")
-                        with open(json_path, "w") as f:
-                            json.dump(self.epoch_times, f, indent=4)
-
-                        
-                        # Save progress to file
-                        with open(os.path.join(self.results_dir, 'progress.txt'), 'a') as f:
-                            f.write(f'DONE: Fold {self.current_iter + 1}/{self.dataset.num_folds} | {self.mode} | Epoch {self.current_epoch}\n')
-                            
                         if self.view_progress == 'verbose':
-                            print(f"Finished epoch = {self.current_epoch} in {end - start:.2f} seconds")
+                            print(
+                                f"Finished epoch = {self.current_epoch} "
+                                f"in {duration_str} ({self.mode})"
+                            )    
+                    # Store duration
+                    total_duration[self.mode] += duration
                 
+                # Salva info per l'epoch corrente e il mode
+                self.durations.append({
+                    self.current_iter : {
+                        self.current_epoch :{
+                        "start": start,
+                        "stop": end,
+                        "duration_train": total_duration['train'],
+                        "duration_val": total_duration['val'],
+                        }
+                    }
+                })
 
                 current_gen_err = epoch_loss['val'] - epoch_loss['train']
 
@@ -230,7 +231,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                             else 0
                         # NB: we reset at any sign of improvement!
                     else :
-                        #TODO: handle this before starting the training.
+                        #TODO
                         pass
                     
                     # Running out of patience?
@@ -251,9 +252,13 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                 warnings.warn(f"halt_training_on_early_stop is deprecated {self.current_epoch}")
 
             # === VALIDAZIONE IMMEDIATA DEL FOLD ===
-            self._eval_single_fold(fold_idx=self.current_iter)
+            scores = self._eval_single_fold(fold_idx=self.current_iter)
+            print(f"{self.current_fold}-th fold performance: {scores}")
               
-        # After we finish all folds, try running a final "validation metrics" pass
+        json_path = os.path.join(self.results_dir, "durations.json")
+        with open(json_path, "w") as f:
+            json.dump(self.durations, f, indent=4)
+
         self.validate()
 
     def _eval_single_fold(self, fold_idx: int):
@@ -290,13 +295,6 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
 
         # Accumula predizioni
         labels, preds, ids = self._accumulate_preds(eval_dataloader, model)
-
-        # Caso fold singolo / dataset minuscolo → rimandiamo aggregazione
-        if len(eval_dataloader.dataset) == 1 or self.dataset.num_folds == 1:
-            return {
-                "labels": labels,
-                "preds": preds
-            }
 
         # Caso standard: salva metriche per-fold
         per_fold_save_dir = os.path.join(
@@ -420,47 +418,80 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
     def _accumulate_preds(self, dataloader, model):
         """
         Forward pass across the entire dataloader to collect predictions 
-        and ground‐truth labels. 
-        For classification: 
-            returns (list_of_int, list_of_probs).
-        For survival:
-            returns (dict_of_arrays_for_events_times, array_of_risks).
+        and ground-truth labels, sample-wise.
         """
         labels_all = []
         preds_all = []
         ids_all = []
 
-        with torch.inference_mode(), torch.autocast(device_type='cuda', dtype=self.precision, enabled=self.precision != torch.float32):
+        model.eval()
+
+        with torch.inference_mode(), torch.autocast(
+            device_type='cuda',
+            dtype=self.precision,
+            enabled=self.precision != torch.float32
+        ):
             for batch in dataloader:
-                # MV: added 6 lines below to save the ids of the predictions for further analyses
+
+                # ---------- IDS ----------
                 raw_ids = batch.get('ids', None)
-                if isinstance(raw_ids, (list, tuple, np.ndarray)):
-                    batch_ids = [str(x) for x in raw_ids]
+                if raw_ids is None:
+                    batch_ids = ["UNKNOWN"] * len(next(iter(batch['labels'].values())))
                 else:
-                    batch_ids = [str(raw_ids)] if raw_ids is not None else ["UNKNOWN"]
+                    batch_ids = [str(x) for x in raw_ids]
+
                 ids_all.extend(batch_ids)
 
+                # ---------- CLASSIFICATION ----------
                 if self.task_type == 'classification':
-                    label = batch['labels'][self.model_kwargs['task_name']].cpu().int().numpy().tolist()[0]
-                    logits = model(batch, output='logits') # Forward pass
-                    prob = torch.softmax(logits[0], dim=0).cpu().detach().numpy()
-                    labels_all.append(label)
-                    preds_all.append(prob)
+
+                    # labels: (B,)
+                    labels = batch['labels'][self.model_kwargs['task_name']]
+                    labels = labels.cpu().int().numpy()
+
+                    # logits: (B, C)
+                    logits = model(batch, output='logits')
+
+                    # probs: (B, C)
+                    probs = torch.softmax(logits, dim=1)
+                    probs = probs.cpu().numpy()
+
+                    labels_all.extend(labels.tolist())
+                    preds_all.extend(probs)
+
+                # ---------- SURVIVAL ----------
                 elif self.task_type == 'survival':
-                    label = {'survival_event': batch['labels']['extra_attrs'][f'{self.model_kwargs["task_name"]}_event'],
-                            'survival_time': batch['labels']['extra_attrs'][f'{self.model_kwargs["task_name"]}_days']}
-                    logits = model(batch, output='logits') # Forward pass
-                    risk = self._calculate_risk(logits[0]).cpu().detach().numpy()
-                    labels_all.append(label)
-                    preds_all.append(risk)
-        
-        # Convert to numpy arrays
+
+                    events = batch['labels']['extra_attrs'][
+                        f'{self.model_kwargs["task_name"]}_event'
+                    ].cpu().numpy()
+
+                    times = batch['labels']['extra_attrs'][
+                        f'{self.model_kwargs["task_name"]}_days'
+                    ].cpu().numpy()
+
+                    logits = model(batch, output='logits')  # (B, *)
+                    risks = self._calculate_risk(logits)    # (B,)
+
+                    risks = risks.cpu().numpy()
+
+                    labels_all.extend(
+                        [{"survival_event": e, "survival_time": t}
+                        for e, t in zip(events, times)]
+                    )
+                    preds_all.extend(risks)
+
+        # ---------- FINAL CONVERSION ----------
         if self.task_type == 'classification':
-            labels_all = np.array(labels_all)
-            preds_all = np.array(preds_all)
+            labels_all = np.asarray(labels_all)
+            preds_all = np.asarray(preds_all)
+
         elif self.task_type == 'survival':
-            labels_all = {k: np.array([v[k][0] for v in labels_all]) for k in labels_all[0].keys()}
-            preds_all = np.array(preds_all)
+            labels_all = {
+                "survival_event": np.asarray([x["survival_event"] for x in labels_all]),
+                "survival_time": np.asarray([x["survival_time"] for x in labels_all]),
+            }
+            preds_all = np.asarray(preds_all)
 
         return labels_all, preds_all, ids_all
     
@@ -584,6 +615,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
         all_losses = []
         all_info = [] # This is additional info returned by the model along with the loss (e.g. predictions, targets, etc.)
         new_best_loss = False
+        new_best_macro_ovr_auc = False
         new_best_smooth_rank = False #(?)
         num_samples_processed = 0
         num_gradient_steps = 0
@@ -664,18 +696,30 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             if self.lr_logging_interval is not None:
                 self.log_lr(self.current_epoch) 
 
+                # Update best val loss
+        if self.mode == 'val':
+            avg_loss = np.mean(all_losses)
+            labels, preds, ids = self._accumulate_preds(self.dataloaders[self.mode], self.model)
+            per_epoch_save_dir = os.path.join(self.results_dir,'current_epoch_metrics')
+            os.makedirs(per_epoch_save_dir, exist_ok=True)
+            scores = self._compute_metrics(labels, preds, per_epoch_save_dir, ids=ids)
+            if avg_loss < self.best_val_loss:
+                self.best_val_loss = avg_loss
+                new_best_loss = True
+            if scores["macro-ovr-auc"] > new_best_macro_ovr_auc:
+                self.best_macro_ovr_auc = scores["macro-ovr-auc"]
+                new_best_macro_ovr_auc = True
+            if  self.scheduler_config.get('type',None) == 'plateau':
+                self.scheduler.step(scores["macro-ovr-auc"])
+                if self.lr_logging_interval is not None:
+                    self.log_lr(self.current_epoch) 
+
         # Save current epoch metrics
         self.current_epoch_metrics = {
             "loss": all_losses,
             "info": all_info,
             "avg_loss": np.mean(all_losses)
         }
-
-        # Update the scheduler during validation if the policy is plateau
-        if self.mode == 'val' and self.scheduler_config.get('type',None) == 'plateau':
-            self.scheduler.step(self.current_epoch_metrics["avg_loss"])
-            if self.lr_logging_interval is not None:
-                self.log_lr(self.current_epoch) 
 
         self.compute_extra_metrics()
 
@@ -689,16 +733,10 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
         else:
             assert self.save_which_checkpoints != 'best-smooth-rank', f"save_which_checkpoints cannot be 'best-smooth-rank' if smooth rank is not returned by the model."
 
-        # Update best val loss
-        if self.mode == 'val':
-            avg_loss = np.mean(all_losses)
-            if avg_loss < self.best_val_loss:
-                self.best_val_loss = avg_loss
-                new_best_loss = True
-
         # Save checkpoints
         save_conditions = [self.save_which_checkpoints == 'all',
                            self.save_which_checkpoints == 'best-val-loss' and new_best_loss,
+                           self.save_which_checkpoints == 'best-macro-ovr-auc' and new_best_macro_ovr_auc,
                            self.save_which_checkpoints == 'best-smooth-rank' and new_best_smooth_rank,
                            self.save_which_checkpoints.startswith('every-') and (self.current_epoch + 1) % int(self.save_which_checkpoints.split('-')[1]) == 0,
                            self.save_which_checkpoints.startswith('last-') and (self.current_epoch + 1) > self.num_epochs - int(self.save_which_checkpoints.split('-')[1])]

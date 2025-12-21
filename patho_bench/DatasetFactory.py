@@ -91,8 +91,6 @@ class DatasetFactory:
             
         return PatchEmbeddingsDataset(split,
                                       load_from = list(set(patch_embeddings_dirs)),
-                                    #   preprocessor= {'features': lambda x: rearrange(x, "1 p f -> p f"),
-                                    #                 'coords': lambda x: rearrange(x, "1 p c -> p c")},
                                       bag_size = bag_size,
                                       shuffle = False,
                                       pad = True,

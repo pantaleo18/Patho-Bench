@@ -26,22 +26,17 @@ class BaseDataset(torch.utils.data.Dataset, ConfigMixin):
         self.current_iter = None
         
     def get_subset(self, iteration, fold):
-        '''
-        Returns a subset of the dataset for a specific iteration and fold.
-
-        Args:
-            iteration (int): Index of the iteration
-            fold (str): 'train', 'val', or 'test'
-
-        Returns:
-            subset (BaseDataset): Subset of the dataset
-        '''
         subset = self.copy()
         subset.current_iter = iteration
-        subset.data = {sample['id']: sample for sample in self.split.data if sample['folds'][iteration] == fold}   # Filter to samples for this iteration and fold
+        subset.data = {
+            sample['id']: sample 
+            for sample in self.split.data 
+            if sample['folds'][iteration] == fold
+        }
         subset.ids = list(subset.data.keys())
-
-        # If dataset has a child_datasets attribute, update child datasets
+        
+        print(f"[DEBUG] Fold='{fold}' | Iteration={iteration} | Num samples={len(subset.ids)}")
+        
         if hasattr(subset, 'child_datasets'):
             for dataset_name, dataset in subset.child_datasets.items():
                 assert not hasattr(dataset, 'child_datasets'), f'BaseDataset.get_subset() does not support multiple levels of child datasets. Dataset name: {dataset_name}'
