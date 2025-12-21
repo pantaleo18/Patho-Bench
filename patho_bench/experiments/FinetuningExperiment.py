@@ -103,7 +103,6 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
         self.early_stop_policy = early_stop_policy
         self.patience = patience
         self.halt_training_on_folder_early_stop = halt_training_on_folder_early_stop
-        self.best_macro_ovr_auc = -1
         
         # Set kwargs as extra attributes for saving in config.json
         for key, value in kwargs.items():
@@ -156,6 +155,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
 
             ### Initialize best loss and rank
             self.best_val_loss = float('inf')    # Initialize to large number
+            self.best_macro_ovr_auc = -1 # Initialize to large number
             self.best_smooth_rank = 0            # Initialize to 0
 
             ### Prepare epoch loop
