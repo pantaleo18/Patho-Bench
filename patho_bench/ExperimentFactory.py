@@ -2,6 +2,7 @@ import os
 import shutil
 import numpy as np
 import torch
+from pathlib import Path
 from torch import nn
 from patho_bench.experiments.LinearProbeExperiment import LinearProbeExperiment
 from patho_bench.experiments.RetrievalExperiment import RetrievalExperiment
@@ -385,16 +386,12 @@ class ExperimentFactory:
 
     @staticmethod
     def sweep(experiment_type: str,
-              split: str,
-              task_config: str,
               saveto_root: str,
               combine_slides_per_patient: bool,
               sweep_over: dict[list],
               gpu: int = -1,
               pooled_embeddings_dir: str = None,
-              patch_embeddings_dirs: list[str] = None,
               model_name: str = None,
-              # model_kwargs: dict = {},
               external_split: str = None,
               external_pooled_embeddings_dir: str = None,
               external_saveto: str = None,
@@ -429,17 +426,11 @@ class ExperimentFactory:
         '''
         # Build the base arguments to pass to the experiment factory.
         args = {
-            'split': split,
-            'task_config': task_config,
             'combine_slides_per_patient': combine_slides_per_patient,
             'gpu': gpu,
-            # 'pooled_embeddings_dir': pooled_embeddings_dir,
-            'patch_embeddings_dirs': patch_embeddings_dirs,
             'model_name': model_name,
-            # 'model_kwargs': model_kwargs,
             'view_progress' : view_progress,
             'external_split': external_split,
-            # 'external_pooled_embeddings_dir': external_pooled_embeddings_dir,
             'external_saveto': external_saveto,
             'num_bootstraps': num_bootstraps,
             'color_map' : color_map,
@@ -461,6 +452,17 @@ class ExperimentFactory:
                 id = i
             )
 
+            # Unpacking dataset parameters
+            dataset_cfg = hyperparams.pop('dataset')
+            hyperparams['split'] = str(Path(dataset_cfg['split']).expanduser())
+            hyperparams['task_config'] = str(Path(dataset_cfg['task_config']).expanduser())
+            hyperparams['patch_embeddings_dirs'] = [
+                str(Path(p).expanduser()) for p in dataset_cfg['patch_embeddings_dirs']
+            ]
+
+            hyperparams['balanced'] = dataset_cfg['balance_loss']
+
+            # Start fine tuning
             if args['saveto'] is not None:
                 if experiment_type == 'finetune':
                     experiment = ExperimentFactory.finetune(**args, **hyperparams)
@@ -729,7 +731,7 @@ def setup_folder_configs(saveto_root,id,hyperparams):
     this_config_path = os.path.join(saveto_root, str(id))
 
     if os.path.exists(this_config_path):
-        hyper_file = os.path.join(this_config_path, 'hyperparameters.json')
+        hyper_file = os.path.join(this_config_path, 'parameters.json')
         if os.path.exists(hyper_file):
             with open(hyper_file, 'r') as f:
                 saved_hyperparams = json.load(f)
