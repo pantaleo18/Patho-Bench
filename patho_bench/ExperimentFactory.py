@@ -731,7 +731,7 @@ def setup_folder_configs(saveto_root,id,hyperparams):
     this_config_path = os.path.join(saveto_root, str(id))
 
     if os.path.exists(this_config_path):
-        hyper_file = os.path.join(this_config_path, 'parameters.json')
+        hyper_file = os.path.join(this_config_path, 'hyperparameters.json')
         if os.path.exists(hyper_file):
             with open(hyper_file, 'r') as f:
                 saved_hyperparams = json.load(f)
