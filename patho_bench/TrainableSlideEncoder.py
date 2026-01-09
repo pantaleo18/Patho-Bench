@@ -190,6 +190,7 @@ class ABMILmillabTrainableSlideClassifier(nn.Module):
         label_dict: dict,
         device,
         freeze_backbone: bool = False,
+        debug : bool = False,
     ):
         super().__init__()
 
@@ -201,6 +202,7 @@ class ABMILmillabTrainableSlideClassifier(nn.Module):
         self.label_dict = label_dict
         self.device = device
         self.freeze_backbone = freeze_backbone
+        self.debug = debug
 
         # --- Linear probing ---
         if self.freeze_backbone:
@@ -241,31 +243,33 @@ class ABMILmillabTrainableSlideClassifier(nn.Module):
         if attn_mask is not None:
             attn_mask = attn_mask.to(self.device, dtype=int)
 
-            # print(f"\n===[{self.__class__}] DEBUG: Attention mask stats ===")
-            # for i in range(attn_mask.size(0)):
-            #     seq_len = attn_mask.size(1)
-            #     num_masked = (attn_mask[i] == 0).sum().item()
-            #     num_unmasked = (attn_mask[i] == 1).sum().item()
-            #     print(
-            #         f"Batch elem {i}: "
-            #         f"length={seq_len}, "
-            #         f"masked={num_masked}, "
-            #         f"unmasked={num_unmasked}"
-            #     )
-
         # --- Forward MIL-Lab ---
         results_dict, log_dict = self.slide_classifier(
             h,
             attn_mask=attn_mask,
-            return_attention=(output == "features"),
-            return_slide_feats=(output == "features"),
+            return_attention=True if self.debug else (output == "features"),
+            return_slide_feats=True if self.debug else (output == "features"),
         )
 
         logits = results_dict["logits"]
 
-        # print(f"\n=== [{self.__class__}] DEBUG: Logits ===")
-        # print("Logits shape:", logits.shape)
-        # print("Logits dtype:", logits.dtype)
+        # --- Debug attenzione per patch mascherate ---
+        if self.debug and attn_mask is not None:
+            A = log_dict["attention"]  # B x K x M
+            B, K, M = A.shape
+            att_min = torch.finfo(A.dtype).min
+            print(f"\n=== [{self.__class__}] DEBUG: Attention mask check ===")
+            for b in range(B):
+                for m in range(M):
+                    if attn_mask[b, m] == 0: 
+                        for k in range(K):
+                            att_val = A[b, k, m].item()
+                            print(f"WSI {b}, patch {m}, head {k}: att={att_val:.3e},")
+                            # assert che l'attenzione sui padding sia minima
+                            assert att_val <= att_min / 2, (
+                                f"Attention non minima per patch mascherata "
+                                f"(batch {b}, patch {m}, head {k}): {att_val}"
+                            )
 
         info = [{
             "slide_features": log_dict.get("slide_feats"),
@@ -279,11 +283,6 @@ class ABMILmillabTrainableSlideClassifier(nn.Module):
         # --- Loss mode ---
         labels = batch["labels"][self.task_name].to(self.device)
 
-        # print(f"\n=== [{self.__class__}] DEBUG: Labels ===")
-        # print("Labels shape:", labels.shape)
-        # print("Labels dtype:", labels.dtype)
-        # print("Labels unique values:", labels.unique())
-
         if isinstance(self.loss, dict):
             assert batch.get("current_iter") is not None, (
                 "current_iter richiesto per loss bilanciata"
@@ -293,14 +292,8 @@ class ABMILmillabTrainableSlideClassifier(nn.Module):
         else:
             loss_val = self.loss(logits, labels)
 
-        # print(f"\n=== [{self.__class__}] DEBUG: Loss object ===")
-        # print(loss_val)
-        # print("Loss type:", type(loss_val))
-
-        # if hasattr(loss_val, "detach"):
-        #     print("Loss value (detached):", loss_val.detach().cpu())
-
         return loss_val, info
+
 
 class CLAMTrainableSlideClassifier(nn.Module):
     """
