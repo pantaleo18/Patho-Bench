@@ -9,8 +9,13 @@ from patho_bench.experiments.RetrievalExperiment import RetrievalExperiment
 from patho_bench.experiments.CoxNetExperiment import CoxNetExperiment
 from patho_bench.experiments.FinetuningExperiment import FinetuningExperiment
 from patho_bench.experiments.GeneralizabilityExperimentWrapper import GeneralizabilityExperimentWrapper
-from patho_bench.TrainableSlideEncoder import TrainableSlideEncoder
-from patho_bench.im4MECTrainableSlideClassifier import im4MECTrainableSlideClassifier
+from patho_bench.TrainableSlideEncoder import (
+    DefaultTrainableSlideEncoder, 
+    im4MECTrainableSlideClassifier, 
+    ABMILmillabTrainableSlideClassifier,
+    CLAMTrainableSlideClassifier
+)
+
 from patho_bench.SplitFactory import SplitFactory
 from patho_bench.DatasetFactory import DatasetFactory
 from patho_bench.helpers.GPUManager import GPUManager
@@ -19,6 +24,8 @@ from sklearn.utils.class_weight import compute_class_weight
 from trident.slide_encoder_models.load import encoder_factory
 import warnings
 import json
+from millab.builder import create_model
+
 
 """
 This file contains the ExperimentFactory class which is responsible for instantiating the appropriate experiment object.
@@ -29,223 +36,6 @@ TEST_EXTERNAL_ONLY = True
 
 class ExperimentFactory:
                 
-    @staticmethod
-    def linprobe(
-                 split: str,
-                 task_config: str,
-                 pooled_embeddings_dir: str,
-                 saveto: str,
-                 combine_slides_per_patient: bool,
-                 cost = 1,
-                 balanced: bool = False,
-                 gpu = -1,
-                 external_split: str = None,
-                 external_pooled_embeddings_dir: str = None,
-                 external_saveto: str = None,
-                 patch_embeddings_dirs: list[str] = None,
-                 model_name: str = None,
-                 model_kwargs: dict = {},
-                 num_bootstraps: int = 100): 
-        '''
-        Create linear probe experiment using slide-level embeddings.
-        
-        Args:
-            split: str, path to local split file.
-            task_config: str, path to task config file.
-            pooled_embeddings_dir: str, path to folder containing pre-pooled embeddings (slide-level or patient-level). If empty, must provide patch_embeddings_dirs.
-            saveto: str, path to save the results
-            combine_slides_per_patient: bool, Whether to combine patches from multiple slides when pooling at case_id level. If False, will pool each slide independently.
-            cost: list or float, cost for Linear Probe experiment
-            balanced: bool, whether to use balanced class weights
-            gpu: int, GPU id. If -1, the best available GPU is used.
-            external_split: str, path to local split file for external testing.
-            external_pooled_embeddings_dir: str, path to folder containing pooled embeddings for external testing. Only needed if external_split is not None.
-            external_saveto: str, path to save the results of external testing. Only needed if external_split is not None.
-            patch_embeddings_dirs: list of str, paths to folder(s) containing patch embeddings for given experiment. Only needed if pooled_embeddings_dir is empty.
-            model_name: str, name of the model to use for pooling. Only needed if pooled_embeddings_dir is empty.
-            model_kwargs: dict, additional arguments to pass to the model constructor. Only needed if pooled_embeddings_dir is empty.
-            num_bootstraps: int, number of bootstraps. Default is 100.
-        '''
-        _, task_info, internal_dataset = ExperimentFactory._prepare_internal_dataset(split_path=split,
-                                                                                    task_config=task_config,
-                                                                                    saveto=saveto,
-                                                                                    combine_slides_per_patient=combine_slides_per_patient,
-                                                                                    combine_train_val=COMBINE_TRAIN_VAL,
-                                                                                    patch_embeddings_dirs=patch_embeddings_dirs,
-                                                                                    pooled_embeddings_dir=pooled_embeddings_dir,
-                                                                                    model_name=model_name,
-                                                                                    model_kwargs=model_kwargs,
-                                                                                    gpu=gpu)
-        
-        # Initialize experiment
-        experiment = LinearProbeExperiment(
-            dataset=internal_dataset,
-            task_name=task_info['task_col'],
-            num_classes=len(task_info['label_dict']),
-            num_bootstraps=num_bootstraps,
-            cost=cost,
-            max_iter=10000,
-            balanced_class_weights=balanced,
-            results_dir=saveto
-        )
-
-        if external_split is None:
-            return experiment
-        else:
-            external_dataset = ExperimentFactory._prepare_external_dataset(
-                external_split, task_config, internal_dataset.num_folds, patch_embeddings_dirs,
-                combine_slides_per_patient, external_pooled_embeddings_dir, model_name, model_kwargs, gpu)
-            return GeneralizabilityExperimentWrapper(
-                experiment,
-                external_dataset=external_dataset,
-                test_external_only=TEST_EXTERNAL_ONLY,
-                saveto=external_saveto
-            )
-    
-    @staticmethod
-    def retrieval(
-                 split: str,
-                 task_config: str,
-                 pooled_embeddings_dir: str,
-                 saveto: str,
-                 combine_slides_per_patient: bool,
-                 similarity: str,
-                 centering: bool,
-                 gpu = -1,
-                 external_split: str = None,
-                 external_pooled_embeddings_dir: str = None,
-                 external_saveto: str = None,
-                 patch_embeddings_dirs: list[str] = None,
-                 model_name: str = None,
-                 model_kwargs: dict = {},
-                 num_bootstraps: int = 100): 
-        '''
-        Create retrieval experiment using slide-level embeddings.
-        
-        Args:
-            split: str, path to local split file.
-            task_config: str, path to task config file.
-            pooled_embeddings_dir: str, path to folder containing pre-pooled embeddings (slide-level or patient-level). If empty, must provide patch_embeddings_dirs.
-            saveto: str, path to save the results
-            combine_slides_per_patient: bool, Whether to combine patches from multiple slides when pooling at case_id level. If False, will pool each slide independently.
-            similarity: str, similarity metric to use. Can be 'cosine' or 'l2'.
-            centering: bool, whether to center the embeddings before computing similarity.
-            gpu: int, GPU id. If -1, the best available GPU is used.
-            external_split: str, path to local split file for external testing.
-            external_pooled_embeddings_dir: str, path to folder containing pooled embeddings for external testing. Only needed if external_split is not None.
-            external_saveto: str, path to save the results of external testing. Only needed if external_split is not None.
-            patch_embeddings_dirs: list of str, paths to folder(s) containing patch embeddings for given experiment. Only needed if pooled_embeddings_dir is empty.
-            model_name: str, name of the model to use for pooling. Only needed if pooled_embeddings_dir is empty.
-            model_kwargs: dict, additional arguments to pass to the model constructor. Only needed if pooled_embeddings_dir is empty.
-            num_bootstraps: int, number of bootstraps. Default is 100.
-        '''
-        _, task_info, internal_dataset = ExperimentFactory._prepare_internal_dataset(split_path=split,
-                                                                                    task_config=task_config,
-                                                                                    saveto=saveto,
-                                                                                    combine_slides_per_patient=combine_slides_per_patient,
-                                                                                    combine_train_val=COMBINE_TRAIN_VAL,
-                                                                                    patch_embeddings_dirs=patch_embeddings_dirs,
-                                                                                    pooled_embeddings_dir=pooled_embeddings_dir,
-                                                                                    model_name=model_name,
-                                                                                    model_kwargs=model_kwargs,
-                                                                                    gpu=gpu)
-        
-        # Initialize experiment
-        experiment = RetrievalExperiment(
-            dataset=internal_dataset,
-            task_name=task_info['task_col'],
-            num_classes=len(task_info['label_dict']),
-            num_bootstraps=num_bootstraps,
-            top_ks=[1, 5, 10],
-            similarity=similarity,
-            use_centering=centering,
-            results_dir=saveto
-        )
-
-        if external_split is None:
-            return experiment
-        else:
-            external_dataset = ExperimentFactory._prepare_external_dataset(
-                external_split, task_config, internal_dataset.num_folds, patch_embeddings_dirs,
-                combine_slides_per_patient, external_pooled_embeddings_dir, model_name, model_kwargs, gpu)
-            return GeneralizabilityExperimentWrapper(
-                experiment,
-                external_dataset=external_dataset,
-                test_external_only=TEST_EXTERNAL_ONLY,
-                saveto=external_saveto
-            )
-    
-    @staticmethod
-    def coxnet(split: str,
-               task_config: str,
-               pooled_embeddings_dir: str,
-               saveto: str,
-               combine_slides_per_patient: bool,
-               alpha: float,
-               l1_ratio: float,
-               gpu=-1,
-               external_split: str=None,
-               external_pooled_embeddings_dir: str=None,
-               external_saveto: str=None,
-               patch_embeddings_dirs: list[str]=None,
-               model_name: str=None,
-               model_kwargs: dict={},
-               num_bootstraps: int=100):
-        '''
-        Create CoxNet experiment using slide-level embeddings.
-        
-        Args:
-            split: str, path to local split file.
-            task_config: str, path to task config file.
-            pooled_embeddings_dir: str, path to folder containing pre-pooled embeddings (slide-level or patient-level). If empty, must provide patch_embeddings_dirs.
-            saveto: str, path to save the results
-            combine_slides_per_patient: bool, Whether to combine patches from multiple slides when pooling at case_id level. If False, will pool each slide independently.
-            alpha: float, alpha parameter for CoxNet
-            l1_ratio: float, l1_ratio parameter for CoxNet
-            gpu: int, GPU id. If -1, the best available GPU is used.
-            external_split: str, path to local split file for external testing.
-            external_pooled_embeddings_dir: str, path to folder containing pooled embeddings for external testing. Only needed if external_split is not None.
-            external_saveto: str, path to save the results of external testing. Only needed if external_split is not None.
-            patch_embeddings_dirs: list of str, paths to folder(s) containing patch embeddings for given experiment. Only needed if pooled_embeddings_dir is empty.
-            model_name: str, name of the model to use for pooling. Only needed if pooled_embeddings_dir is empty.
-            model_kwargs: dict, additional arguments to pass to the model constructor. Only needed if pooled_embeddings_dir is empty.
-            num_bootstraps: int, number of bootstraps. Default is 100.
-        '''
-        _, task_info, internal_dataset = ExperimentFactory._prepare_internal_dataset(split_path=split,
-                                                                                    task_config=task_config,
-                                                                                    saveto=saveto,
-                                                                                    combine_slides_per_patient=combine_slides_per_patient,
-                                                                                    combine_train_val=COMBINE_TRAIN_VAL,
-                                                                                    patch_embeddings_dirs=patch_embeddings_dirs,
-                                                                                    pooled_embeddings_dir=pooled_embeddings_dir,
-                                                                                    model_name=model_name,
-                                                                                    model_kwargs=model_kwargs,
-                                                                                    gpu=gpu)
-        
-        # Initialize experiment
-        experiment = CoxNetExperiment(
-            dataset=internal_dataset,
-            task_name=task_info['task_col'],
-            alpha=alpha,
-            l1_ratio=l1_ratio,
-            max_iter=100000,
-            num_bootstraps=num_bootstraps,
-            results_dir=saveto
-        )
-
-        if external_split is None:
-            return experiment
-        else:
-            external_dataset = ExperimentFactory._prepare_external_dataset(
-                external_split, task_config, internal_dataset.num_folds, patch_embeddings_dirs,
-                combine_slides_per_patient, external_pooled_embeddings_dir, model_name, model_kwargs, gpu)
-            return GeneralizabilityExperimentWrapper(
-                experiment,
-                external_dataset=external_dataset,
-                test_external_only=TEST_EXTERNAL_ONLY,
-                saveto=external_saveto
-            )
-
     @staticmethod
     def finetune(split: str,
                  task_config: str,
@@ -263,6 +53,7 @@ class ExperimentFactory:
                  balanced: bool,
                  save_which_checkpoints: str,
                  model_kwargs: dict = {},
+                 precision : str = None,
                  layer_decay = None,
                  gpu = -1,
                  batch_size = 1, 
@@ -292,37 +83,23 @@ class ExperimentFactory:
             bag_size=bag_size
         )
 
-        task_name = task_info['task_col']
-
         ###### Get loss ################################################################
         if task_info['task_type'] == 'survival':
             loss = NLLSurvLoss(alpha=0.0, eps=1e-7, reduction='mean')
         elif balanced:
             # Balanced loss is a dict of losses for each fold
-            fold_weights = {fold: compute_class_weight('balanced', classes = np.array(sorted(split.unique_classes(task_name))), y = split.y(task_name, fold, 'train')) for fold in range(split.num_folds)}
+            fold_weights = {fold: compute_class_weight('balanced', classes = np.array(sorted(split.unique_classes(task_info['task_col']))), y = split.y(task_info['task_col'], fold, 'train')) for fold in range(split.num_folds)}
             loss = {fold: nn.CrossEntropyLoss(weight = torch.from_numpy(weights).float()) for fold, weights in fold_weights.items()}
         else:
             loss = nn.CrossEntropyLoss()
         
         ###### Configure model ################################################################
-        model_name_clean = model_name.replace("-randominit", "")
-
-        slide_encoder = encoder_factory(
-            model_name_clean, 
-            pretrained = False, 
-            freeze=False, 
-            **model_kwargs
+        model_constructor, classifier_args = ExperimentFactory.configure_model(
+            model_name,
+            model_kwargs,
+            loss,
+            task_info
         )
-
-        # MP: model_kwargs changes meaning. This will be used bu FinetuningExperiment
-        model_kwargs = {
-            'slide_encoder': slide_encoder,
-            'post_pooling_dim': slide_encoder.embedding_dim,
-            'task_name': task_name,
-            'num_classes': len(task_info['label_dict']),
-            'loss': loss,
-            'label_dict' : task_info['label_dict'],
-        }
 
         if scheduler_config is None:
             scheduler_config = get_scheduler_basic_config(scheduler_type)
@@ -346,15 +123,15 @@ class ExperimentFactory:
             task_type = task_info['task_type'],
             dataset = internal_dataset,
             batch_size = batch_size,
-            model_constructor = TrainableSlideEncoder if model_name_clean != "im4MEC" else im4MECTrainableSlideClassifier,
-            model_kwargs = model_kwargs,
-            num_epochs = num_epochs, # if nshots == 'all' else 500//(nshots * num_classes),
+            model_constructor = model_constructor,
+            classifier_args = classifier_args,
+            num_epochs = num_epochs,
             accumulation_steps = gradient_accumulation,
             optimizer_config = optimizer_config,
             scheduler_config = scheduler_config,
             save_which_checkpoints = save_which_checkpoints,
             num_bootstraps = num_bootstraps,
-            precision = slide_encoder.precision,
+            precision = get_precision_type(precision),
             device = f'cuda:{gpu if gpu != -1 else GPUManager.get_best_gpu(min_mb=500)}',
             results_dir = saveto,
             view_progress = view_progress,
@@ -391,7 +168,7 @@ class ExperimentFactory:
               sweep_over: dict[list],
               gpu: int = -1,
               pooled_embeddings_dir: str = None,
-              model_name: str = None,
+            #   model_name: str = None,
               external_split: str = None,
               external_pooled_embeddings_dir: str = None,
               external_saveto: str = None,
@@ -428,7 +205,7 @@ class ExperimentFactory:
         args = {
             'combine_slides_per_patient': combine_slides_per_patient,
             'gpu': gpu,
-            'model_name': model_name,
+            # 'model_name': model_name,
             'view_progress' : view_progress,
             'external_split': external_split,
             'external_saveto': external_saveto,
@@ -467,19 +244,10 @@ class ExperimentFactory:
                 if experiment_type == 'finetune':
                     experiment = ExperimentFactory.finetune(**args, **hyperparams)
                 else: 
-                    args['pooled_embeddings_dir'] = pooled_embeddings_dir
-                    args['external_pooled_embeddings_dir'] = external_pooled_embeddings_dir
-                    if experiment_type == 'linprobe':
-                        experiment = ExperimentFactory.linprobe(**args, **hyperparams)
-                    elif experiment_type == 'retrieval':
-                        experiment = ExperimentFactory.retrieval(**args, **hyperparams)
-                    elif experiment_type == 'coxnet':
-                        experiment = ExperimentFactory.coxnet(**args, **hyperparams)
-                    else:
-                        raise NotImplementedError(
-                            f'Experiment type {experiment_type} not recognized. Please choose from "finetune", "linprobe", "retrieval", or "coxnet".'
-                        )
-                
+                    raise NotImplementedError(
+                        f'Experiment type {experiment_type} not recognized. Please choose from "finetune", "linprobe", "retrieval", or "coxnet".'
+                    )
+            
                 experiments_list.append(experiment.train())
             
         return experiments_list
@@ -565,6 +333,60 @@ class ExperimentFactory:
                 bag_size=bag_size
             )
 
+    @staticmethod
+    def _get_model_constructor(model_name : str):
+        if "millab" in model_name:
+            if "abmil" in model_name:
+                return ABMILmillabTrainableSlideClassifier
+            if "clam" in model_name:
+                return CLAMTrainableSlideClassifier
+        elif model_name == 'im4MEC':
+            return im4MECTrainableSlideClassifier
+        else :
+            return DefaultTrainableSlideEncoder
+
+    @staticmethod     
+    def configure_model(model_name : str, model_kwargs : dict, loss, task_info : dict):
+        
+        model_constructor = ExperimentFactory._get_model_constructor(model_name)
+        model_name_cleaned = model_name.replace("millab:", "")
+        num_classes = len(task_info['label_dict'])
+
+        if model_constructor is ABMILmillabTrainableSlideClassifier:
+            
+            slide_classifier = create_model(model_name_cleaned, from_pretrained=True, num_classes=num_classes)
+            print(slide_classifier)
+            print(f"{type(slide_classifier) = }")
+
+            classifier_args = {
+                'slide_classifier': slide_classifier,
+                'post_pooling_dim': slide_classifier.model.classifier.in_features,
+                'task_name': task_info['task_col'],
+                'num_classes': num_classes,
+                'loss': loss,
+                'freeze_backbone' : model_kwargs['freeze_backbone'],
+                'label_dict' : task_info['label_dict'],
+            }
+        
+        else : 
+            slide_encoder = encoder_factory(
+                model_name_cleaned, 
+                pretrained = False, 
+                freeze=False, 
+                **model_kwargs
+            )
+
+            classifier_args = {
+                'slide_encoder': slide_encoder,
+                'post_pooling_dim': slide_encoder.embedding_dim,
+                'task_name': task_info['task_col'],
+                'num_classes': num_classes,
+                'loss': loss,
+                'label_dict' : task_info['label_dict'],
+            }
+
+        return model_constructor, classifier_args
+
 ############################################################################################################
 # Some helper functions
         
@@ -626,7 +448,7 @@ def make_list(x):
     return x if isinstance(x, list) else [x]
 
 def get_scheduler_basic_config(scheduler_type : str):
-            ###### Configure scheduler ################################################################
+        ###### Configure scheduler ################################################################
         if scheduler_type == 'gigapath':
             from patho_bench.optim.GigaPathOptim import CustomLRScheduler
             scheduler_config = {
@@ -765,3 +587,16 @@ def setup_folder_configs(saveto_root,id,hyperparams):
         json.dump(hyperparams, f, indent=4)
     
     return this_config_path
+
+def get_precision_type(precision : str):
+    if "bfloat16" == precision : 
+        return torch.bfloat16
+    elif "float16" == precision:
+        return torch.float16
+    elif "float64" == precision:
+        return torch.float64
+    elif "float32" == precision:
+        return torch.float32
+    else:
+        # Default
+        return torch.float32

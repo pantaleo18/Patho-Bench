@@ -36,7 +36,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                  dataset: BaseDataset,
                  batch_size: int,
                  model_constructor: callable,
-                 model_kwargs: dict,
+                 classifier_args: dict,
                  num_epochs: int,
                  accumulation_steps: int,
                  optimizer_config: dict,
@@ -63,7 +63,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             dataset (BaseDataset): Dataset object
             batch_size (int): Batch size.
             model_constructor (callable): Model class which can be called to create model instance.
-            model_kwargs: Arguments passed to model_constructor.
+            classifier_kwargs: Arguments passed to model_constructor.
             num_epochs (int): Number of epochs.
             accumulation_steps (int): Number of batches to accumulate gradients over before stepping optimizer.
             optimizer_config: Optimizer config.
@@ -84,7 +84,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
         self.dataset = dataset
         self.batch_size = batch_size
         self.model_constructor = model_constructor
-        self.model_kwargs = model_kwargs
+        self.classifier_args = classifier_args
         self.num_epochs = num_epochs
         self.accumulation_steps = accumulation_steps
         self.optimizer_config = optimizer_config
@@ -133,8 +133,8 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             ### Initialize train and val dataloaders
             self.dataloaders = {mode: self.dataset.get_dataloader(self.current_iter, mode, batch_size=self.batch_size) for mode in ['train', 'val']}
             
-            ### Initialize model (type: TrainableSlideEncoder)
-            self.model = self.model_constructor(**self.model_kwargs, device = self.device)
+            ### Initialize model
+            self.model = self.model_constructor(**self.classifier_args, device = self.device)
             self.save_model_architecture(self.model, os.path.join(self.results_dir, f'model.txt'))
             
             ### Initialize optimizer and scheduler
@@ -284,7 +284,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
 
         # Load e freeze modello
         try:
-            model = self.model_constructor(**self.model_kwargs, device=self.device)
+            model = self.model_constructor(**self.classifier_args, device=self.device)
             model = self.load_checkpoint(model, ckpt_path)
             model = self.freeze(model)
         except Exception as e:
@@ -384,7 +384,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
 
             ### Load the model and freeze it
             try:
-                model = self.model_constructor(**self.model_kwargs, device=self.device)
+                model = self.model_constructor(**self.classifier_args, device=self.device)
                 model = self.load_checkpoint(model, ckpt_path)
                 model = self.freeze(model)
             except Exception as e:
@@ -446,7 +446,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                 if self.task_type == 'classification':
 
                     # labels: (B,)
-                    labels = batch['labels'][self.model_kwargs['task_name']]
+                    labels = batch['labels'][self.classifier_args['task_name']]
                     labels = labels.cpu().int().numpy()
 
                     # logits: (B, C)
@@ -463,11 +463,11 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                 elif self.task_type == 'survival':
 
                     events = batch['labels']['extra_attrs'][
-                        f'{self.model_kwargs["task_name"]}_event'
+                        f'{self.classifier_args["task_name"]}_event'
                     ].cpu().numpy()
 
                     times = batch['labels']['extra_attrs'][
-                        f'{self.model_kwargs["task_name"]}_days'
+                        f'{self.classifier_args["task_name"]}_days'
                     ].cpu().numpy()
 
                     logits = model(batch, output='logits')  # (B, *)
@@ -505,18 +505,18 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             save_dir (str): Directory to save metrics to
         """
         if self.task_type == 'classification':
-            self.auc_roc(labels, preds, self.model_kwargs['num_classes'], 
+            self.auc_roc(labels, preds, self.classifier_args['num_classes'], 
                         saveto=os.path.join(save_dir, "roc_curves.png"),
-                        label_dict=self.model_kwargs['label_dict'],color_map = self.color_map)
-            self.precision_recall(labels, preds, self.model_kwargs['num_classes'], 
+                        label_dict=self.classifier_args['label_dict'],color_map = self.color_map)
+            self.precision_recall(labels, preds, self.classifier_args['num_classes'], 
                                 saveto=os.path.join(save_dir, "pr_curves.png"),
-                                label_dict=self.model_kwargs['label_dict'],color_map = self.color_map)
-            self.confusion_matrix(labels, preds, self.model_kwargs['num_classes'], 
+                                label_dict=self.classifier_args['label_dict'],color_map = self.color_map)
+            self.confusion_matrix(labels, preds, self.classifier_args['num_classes'], 
                                 saveto=os.path.join(save_dir, "confusion_matrices.png"),
-                                label_dict=self.model_kwargs['label_dict'])
-            scores = self.classification_metrics(labels, preds, self.model_kwargs['num_classes'], 
+                                label_dict=self.classifier_args['label_dict'])
+            scores = self.classification_metrics(labels, preds, self.classifier_args['num_classes'], 
                                                 saveto=os.path.join(save_dir, "metrics.json"),
-                                                label_dict=self.model_kwargs['label_dict'])
+                                                label_dict=self.classifier_args['label_dict'])
             np.savez_compressed(  # MV ADDED: Save labels and preds and ids together as a single .npz file
                 os.path.join(save_dir, "labels_preds.npz"),
                 labels=np.array([labels], dtype=object),
@@ -555,7 +555,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             # Perform bootstrapping and calculate 95% CI (# They do?)
             bootstraps = self.bootstrap(labels_across_folds, preds_across_folds, self.num_bootstraps)
             if self.task_type == 'classification':
-                scores_across_folds = [self.classification_metrics(labels, preds, self.model_kwargs['num_classes'])['overall'] for labels, preds in tqdm(bootstraps, desc=f'Computing {self.num_bootstraps} bootstraps')]
+                scores_across_folds = [self.classification_metrics(labels, preds, self.classifier_args['num_classes'])['overall'] for labels, preds in tqdm(bootstraps, desc=f'Computing {self.num_bootstraps} bootstraps')]
             elif self.task_type == 'survival':
                 scores_across_folds = [self.survival_metrics(labels['survival_event'], labels['survival_time'], preds) for labels, preds in tqdm(bootstraps, desc=f'Computing {self.num_bootstraps} bootstraps')]
             

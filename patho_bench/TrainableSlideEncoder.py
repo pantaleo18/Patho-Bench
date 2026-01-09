@@ -1,5 +1,6 @@
 import copy
 from torch import nn
+import torch
 from patho_bench.optim.NLLSurvLoss import NLLSurvLoss
 from patho_bench.Pooler import Pooler
 
@@ -8,7 +9,7 @@ This is a wrapper class that allows for finetuning of a slide encoder model on a
 This class is used by ExperimentFactory.
 """
 
-class TrainableSlideEncoder(nn.Module):
+class DefaultTrainableSlideEncoder(nn.Module):
     def __init__(self,
                  slide_encoder,
                  post_pooling_dim,
@@ -90,3 +91,308 @@ class TrainableSlideEncoder(nn.Module):
             return loss, info
         
         raise ValueError(f"Invalid output type {output}")
+    
+class im4MECTrainableSlideClassifier(nn.Module):
+    """
+    Classificatore per slide multibranch (CLAM-style) compatibile con TrainableSlideEncoder.
+    Output: B x n_classes
+    """
+
+    def __init__(self, slide_encoder, post_pooling_dim, task_name, num_classes, loss, device, label_dict):
+        """
+        Args:
+            slide_encoder (nn.Module): il pooler multibranch
+            post_pooling_dim (int): hidden_dim dei branch
+            task_name (str): nome del task
+            num_classes (int): numero di classi target
+            loss (nn.Module o dict): CrossEntropyLoss (bilanciata o no)
+            device (str o torch.device)
+            label_dict (dict): opzionale, come in TrainableSlideEncoder
+        """
+        super().__init__()
+        self.slide_encoder = copy.deepcopy(slide_encoder)
+        self.post_pooling_dim = post_pooling_dim
+        self.task_name = task_name
+        self.num_classes = num_classes
+        self.loss = loss
+        self.device = device
+        self.label_dict = label_dict
+
+        # Classifier indipendente per ciascuna classe
+        self.classifiers = nn.ModuleList([nn.Linear(post_pooling_dim,1) for _ in range(num_classes)])
+
+        # Xavier init
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_normal_(m.weight)
+                m.bias.data.zero_()
+
+        self.to(device)
+        if isinstance(self.loss, dict): # If balanced loss is used
+            for iter_idx, loss in self.loss.items():
+                self.loss[iter_idx].to(device)
+        else:
+            self.loss.to(device)
+
+    def forward(self, batch, output='loss'):
+        """
+        Args:
+            batch (dict): contiene almeno 'features' e 'labels'
+            output (str): 'loss', 'logits', 'features'
+        Returns:
+            loss, info se output='loss'
+        """
+        # --- Slide encoding (dal nostro pooler multibranch) ---
+        slide_encoder_input = Pooler.prepare_slide_encoder_input_batch(batch['slide'])
+        slide_features = Pooler.pool(self.slide_encoder, slide_encoder_input, self.device)
+
+        B, n_branches, hidden_dim = slide_features.shape
+        assert n_branches == self.num_classes, f"{n_branches = }, {self.num_classes = }"
+        assert hidden_dim == self.post_pooling_dim, f"{B = }, {n_branches = }, {hidden_dim = }"
+
+        # --- Logits branch-wise ---
+        logits = torch.empty(B, self.num_classes, device=self.device)
+        for c in range(self.num_classes):
+            logits[:, c] = self.classifiers[c](slide_features[:, c, :]).squeeze(-1)
+
+        if output == 'loss':
+            labels = batch['labels'][self.task_name].to(self.device)
+            if isinstance(self.loss, dict):
+                # balanced loss: richiede current_iter nel batch
+                assert batch.get('current_iter') is not None, "current_iter deve essere presente per loss bilanciata"
+                loss_val = self.loss[batch['current_iter']](logits.squeeze(), labels.squeeze())
+            else:
+                loss_val = self.loss(logits.squeeze(), labels.squeeze())
+            info = [{}]  # eventuali metriche opzionali
+            return loss_val, info
+
+        elif output == 'logits':
+            return logits
+
+        elif output == 'features':
+            return slide_features
+
+        else:
+            raise NotImplementedError(f"Output mode {output} non implementato")
+
+class ABMILmillabTrainableSlideClassifier(nn.Module):
+    """
+    Wrapper per modelli MIL-Lab (es. ABMIL) compatibile con FinetuningExperiment.
+    """
+
+    def __init__(
+        self,
+        slide_classifier: nn.Module,
+        post_pooling_dim: int,
+        task_name: str,
+        num_classes: int,
+        loss,
+        label_dict: dict,
+        device,
+        freeze_backbone: bool = False,
+    ):
+        super().__init__()
+
+        self.slide_classifier = copy.deepcopy(slide_classifier) # Deep copy to avoid to modify original model while cross-validating.
+        self.post_pooling_dim = post_pooling_dim
+        self.task_name = task_name
+        self.num_classes = num_classes
+        self.loss = loss
+        self.label_dict = label_dict
+        self.device = device
+        self.freeze_backbone = freeze_backbone
+
+        # --- Linear probing ---
+        if self.freeze_backbone:
+            for p in self.slide_classifier.parameters():
+                p.requires_grad = False
+
+            if hasattr(self.slide_classifier, "model") and hasattr(self.slide_classifier.model, "classifier"):
+                for p in self.slide_classifier.model.classifier.parameters():
+                    p.requires_grad = True
+            else:
+                raise AttributeError(
+                    "slide_classifier non espone model.classifier"
+                )
+
+        self.to(device)
+
+        # MP: you can also pass to the model loss_fn. Do this in ExperimentFineTuning if needed.
+        if isinstance(self.loss, dict):
+            for _, l in self.loss.items():
+                l.to(device)
+        else:
+            self.loss.to(device)
+
+    def forward(self, batch: dict, output: str = "loss"):
+        """
+        output:
+            - 'loss'     -> ritorna (loss, [{}])
+            - 'logits'   -> ritorna logits
+            - 'features' -> ritorna (loss, {features,attention})
+        """
+
+        # --- Prepare input ---
+        slide_input = Pooler.prepare_slide_encoder_input_batch(batch["slide"])
+
+        h = slide_input["features"].to(self.device)
+        attn_mask = slide_input.get("mask", None)
+
+        if attn_mask is not None:
+            attn_mask = attn_mask.to(self.device, dtype=int)
+
+            # print(f"\n===[{self.__class__}] DEBUG: Attention mask stats ===")
+            # for i in range(attn_mask.size(0)):
+            #     seq_len = attn_mask.size(1)
+            #     num_masked = (attn_mask[i] == 0).sum().item()
+            #     num_unmasked = (attn_mask[i] == 1).sum().item()
+            #     print(
+            #         f"Batch elem {i}: "
+            #         f"length={seq_len}, "
+            #         f"masked={num_masked}, "
+            #         f"unmasked={num_unmasked}"
+            #     )
+
+        # --- Forward MIL-Lab ---
+        results_dict, log_dict = self.slide_classifier(
+            h,
+            attn_mask=attn_mask,
+            return_attention=(output == "features"),
+            return_slide_feats=(output == "features"),
+        )
+
+        logits = results_dict["logits"]
+
+        # print(f"\n=== [{self.__class__}] DEBUG: Logits ===")
+        # print("Logits shape:", logits.shape)
+        # print("Logits dtype:", logits.dtype)
+
+        info = [{
+            "slide_features": log_dict.get("slide_feats"),
+            "attention": log_dict.get("attention"),
+        }]
+
+        # --- Logits only ---
+        if output == "logits":
+            return logits
+
+        # --- Loss mode ---
+        labels = batch["labels"][self.task_name].to(self.device)
+
+        # print(f"\n=== [{self.__class__}] DEBUG: Labels ===")
+        # print("Labels shape:", labels.shape)
+        # print("Labels dtype:", labels.dtype)
+        # print("Labels unique values:", labels.unique())
+
+        if isinstance(self.loss, dict):
+            assert batch.get("current_iter") is not None, (
+                "current_iter richiesto per loss bilanciata"
+            )
+            loss_fn = self.loss[batch["current_iter"]]
+            loss_val = loss_fn(logits, labels)
+        else:
+            loss_val = self.loss(logits, labels)
+
+        # print(f"\n=== [{self.__class__}] DEBUG: Loss object ===")
+        # print(loss_val)
+        # print("Loss type:", type(loss_val))
+
+        # if hasattr(loss_val, "detach"):
+        #     print("Loss value (detached):", loss_val.detach().cpu())
+
+        return loss_val, info
+
+class CLAMTrainableSlideClassifier(nn.Module):
+    """
+    Wrapper per CLAMSB compatibile con FinetuningExperiment.
+    Gestisce batch come dizionario, linear probing e vari output types.
+    """
+
+    def __init__(
+        self,
+        slide_classifier: nn.Module,
+        post_pooling_dim: int,
+        task_name: str,
+        num_classes: int,
+        loss,
+        label_dict: dict,
+        device,
+        freeze_backbone: bool = False,
+    ):
+        super().__init__()
+
+        self.slide_classifier = slide_classifier
+        self.post_pooling_dim = post_pooling_dim
+        self.task_name = task_name
+        self.num_classes = num_classes
+        self.loss = loss
+        self.label_dict = label_dict
+        self.device = device
+        self.freeze_backbone = freeze_backbone
+
+        # --- Linear probing: freeze backbone se richiesto ---
+        if self.freeze_backbone:
+            for p in self.slide_classifier.parameters():
+                p.requires_grad = False
+
+            # Riabilita il classifier bag-level
+            if hasattr(self.slide_classifier.model, "classifier"):
+                for p in self.slide_classifier.model.classifier.parameters():
+                    p.requires_grad = True
+
+        # --- Move to device ---
+        self.to(device)
+
+        # --- Move loss to device ---
+        if isinstance(self.loss, dict):
+            for _, l in self.loss.items():
+                l.to(device)
+        else:
+            self.loss.to(device)
+
+    def forward(self, batch, output: str = "loss"):
+        """
+        Args:
+            batch (dict): deve contenere 'slide' con features, mask, coords, attributes.
+            output (str): 'loss' | 'logits' | 'features'
+
+        Returns:
+            logits se output='logits', oppure (loss, info) se output='loss',
+            oppure (features, info) se output='features'
+        """
+
+        # --- Prepare input per CLAM ---
+        slide_input = Pooler.prepare_slide_encoder_input_batch(batch["slide"])
+        h = slide_input["features"].to(self.device)
+        attn_mask = slide_input.get("mask", None)
+        if attn_mask is not None:
+            attn_mask = attn_mask.to(self.device)
+
+        # --- Forward pass ---
+        label = batch["labels"][self.task_name].to(self.device) if "labels" in batch else None
+        results_dict, log_dict = self.slide_classifier(
+            h=h,
+            label=label,
+            loss_fn=self.loss if output=="loss" else None,
+            attn_mask=attn_mask,
+            return_attention=True,
+            return_slide_feats=True
+        )
+
+        # --- Gestione output ---
+        if output == "logits":
+            return results_dict["logits"]
+
+        elif output == "loss":
+            return results_dict["loss"], [log_dict]
+
+        elif output == "features":
+            info = {
+                "attention": log_dict.get("attention"),
+                "slide_feats": log_dict.get("slide_feats")
+            }
+            return log_dict.get("slide_feats"), [info]
+
+        else:
+            raise ValueError(f"Invalid output type: {output}")
+
