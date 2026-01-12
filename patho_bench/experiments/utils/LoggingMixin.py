@@ -24,6 +24,21 @@ Methods:
 """
 
 class LoggingMixin:
+
+    METRICS = {
+        "macro-ovr-auc",
+        "macro-ovo-auc",
+        "macro-precision",
+        "macro-recall",
+        "macro-f1",
+        "weighted-precision",
+        "weighted-recall",
+        "weighted-f1",
+        "acc",
+        "bacc",
+        "weighted_kappa",
+    }
+    
     def compute_extra_metrics(self):
         """
         OPTIONAL. Compute extra metrics based on self.current_epoch_metrics['outputs'] and add to self.current_epoch_metrics

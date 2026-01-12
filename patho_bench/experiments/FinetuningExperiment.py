@@ -790,6 +790,12 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
         if isinstance(self.scheduler_config['type'], str):
             # Using built-in scheduler
             if self.scheduler_config['type'] == 'plateau':
+                stepping_policy = self.scheduler_config['step_on']
+                
+                # Breaks if the policy is not valid
+                if stepping_policy not in LoggingMixin.METRICS and stepping_policy != "val":
+                    raise ValueError(f"'{stepping_policy}' is not recognized as a valid metric.")
+
                 return torch.optim.lr_scheduler.ReduceLROnPlateau(
                     self.optimizer,
                     mode=self.scheduler_config['mode'],
@@ -845,50 +851,6 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
         else:
             raise ValueError(f"Scheduler type must be a string or a callable, got {self.scheduler_config['type']} instead.")
 
-    @staticmethod
-    def _is_new_best_score(score_type: str, best: float, curr_val: float) -> bool:
-        """
-        Decide whether curr_val is a new best score given the score type.
-
-        - For most metrics, higher is better.
-        - For 'val-loss', lower is better.
-        - For unknown score types, warn and assume higher is better.
-        """
-
-        # Metrics where LOWER is better
-        lower_is_better = {"val-loss"}
-
-        if score_type in lower_is_better:
-            return curr_val < best
-
-        # Known metrics where HIGHER is better
-        higher_is_better = {
-            "macro-ovr-auc",
-            "macro-ovo-auc",
-            "macro-precision",
-            "macro-recall",
-            "macro-f1",
-            "weighted-precision",
-            "weighted-recall",
-            "weighted-f1",
-            "acc",
-            "bacc",
-            "weighted_kappa",
-        }
-
-        if score_type in higher_is_better:
-            return curr_val > best
-
-        # Fallback: unknown metric
-        warnings.warn(
-            f"Score type '{score_type}' not recognised. "
-            "Assuming higher is better.",
-            RuntimeWarning,
-        )
-        return curr_val > best
-
-
-
     def _init_optimizer(self):
         '''
         Initialize optimizer.
@@ -911,3 +873,30 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             return AdamW(param_groups, self.optimizer_config['base_lr'], **extra_kwargs)
         else:
             raise NotImplementedError(f"Optimizer {optimizer_type} not implemented.")
+        
+    @staticmethod
+    def _is_new_best_score(score_type: str, best: float, curr_val: float) -> bool:
+        """
+        Decide whether curr_val is a new best score given the score type.
+
+        - For most metrics, higher is better.
+        - For 'val-loss', lower is better.
+        - For unknown score types, warn and assume higher is better.
+        """
+
+        # Metrics where LOWER is better
+        lower_is_better = {"val-loss"}
+
+        if score_type in lower_is_better:
+            return curr_val < best
+
+        if score_type in LoggingMixin.METRICS:
+            return curr_val > best
+
+        # Fallback: unknown metric
+        warnings.warn(
+            f"Score type '{score_type}' not recognised. "
+            "Assuming higher is better.",
+            RuntimeWarning,
+        )
+        return curr_val > best
