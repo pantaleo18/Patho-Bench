@@ -40,14 +40,15 @@ class LoggingMixin:
         Sets:
             self.logger (Any): Logger object
         """
+        
         return {
             "loss": TrainingMetricsLogger(save_dir, "loss", step_on="epoch"),
             "lr": TrainingMetricsLogger(
                 save_dir, "lr", step_on="optimizer-step"
             ), 
-            "macro-auc-ovr": TrainingMetricsLogger(
-                save_dir, "macro_auc-ovr", step_on="epoch"
-            ), 
+            self.target_score : TrainingMetricsLogger(
+                save_dir, self.target_score, step_on="epoch"
+            ),
             "smooth_rank": TrainingMetricsLogger(
                 save_dir, "smooth_rank", step_on="epoch"
             ),
@@ -64,16 +65,16 @@ class LoggingMixin:
         """
         self.loggers["lr"].step({self.mode: self.scheduler.get_last_lr()[0]}, step)
 
-    def log_macro_auc_ovr(self,step,metric):
+    def log_target_score(self,step,score):
         """
-        Log learning rate to dashboard. This method can be overwritten in child classes to log learning rate differently.
+        Log target score to dashboard. This method can be overwritten in child classes to log learning rate differently.
 
         You may find the following attributes useful:
             self.current_epoch (int): Current epoch idx
             self.mode (str): Mode of operation, either 'train', 'val', or 'test'.
             self.scheduler (torch.optim.lr_scheduler): Learning rate scheduler
         """
-        self.loggers["macro-auc-ovr"].step({self.mode : metric}, step)
+        self.loggers[self.target_score].step({self.mode : score}, step)
 
     def log_loss(self, step):
         """
@@ -150,7 +151,7 @@ class LoggingMixin:
         os.makedirs(save_dir, exist_ok=True)
 
         # Delete previous best checkpoint
-        if method in ["best-val-loss", "best-smooth-rank", "best-macro-ovr-auc"]:
+        if method.startswith("best-"):
             existing_checkpoints = [
                 os.path.join(save_dir, checkpoint)
                 for checkpoint in os.listdir(save_dir)

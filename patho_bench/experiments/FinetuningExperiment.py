@@ -54,7 +54,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                  early_stop_policy : str = "best-val-err",
                  patience : int = 3,
                  halt_training_on_folder_early_stop : bool = False,
-                 target_metric : str = "macro-ovr_auc",
+                 target_score : str = "macro-ovr_auc",
                  **kwargs):
         """
         Base class for all experiments.
@@ -104,7 +104,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
         self.early_stop_policy = early_stop_policy
         self.patience = patience
         self.halt_training_on_folder_early_stop = halt_training_on_folder_early_stop
-        self.target_metric = target_metric
+        self.target_score = target_score
         
         # Set kwargs as extra attributes for saving in config.json
         for key, value in kwargs.items():
@@ -156,9 +156,8 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                 self.grad_scaler = torch.cuda.amp.GradScaler(enabled = (self.precision == torch.float16))
 
             ### Initialize best loss and rank
-            self.best_val_loss = float('inf')    # Initialize to large number
-            self.best_target_metric = -1 # Inizialize to out-of-range number
-            self.best_macro_ovr_auc = -1 # Initialize to out-of-range number
+            self.best_val_loss = float('inf')
+            self.best_target_score = float('-inf') 
             self.best_smooth_rank = 0    # Initialize to 0
 
             ### Prepare epoch loop
@@ -515,7 +514,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                                 saveto=os.path.join(save_dir, "pr_curves.png"),
                                 label_dict=self.model_kwargs['label_dict'],color_map = self.color_map)
             self.confusion_matrix(labels, preds, self.model_kwargs['num_classes'], 
-                                saveto=os.path.join(save_dir, "confusion_matrices.png"),
+                                saveto=os.path.join(save_dir, "confusion_matrix.png"),
                                 label_dict=self.model_kwargs['label_dict'])
             scores = self.classification_metrics(labels, preds, self.model_kwargs['num_classes'], 
                                                 saveto=os.path.join(save_dir, "metrics.json"),
@@ -618,8 +617,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
         all_losses = []
         all_info = [] # This is additional info returned by the model along with the loss (e.g. predictions, targets, etc.)
         new_best_loss = False
-        new_best_target_metric =False
-        new_best_macro_ovr_auc = False
+        new_best_target_score =False
         new_best_smooth_rank = False
         num_samples_processed = 0
         num_gradient_steps = 0
@@ -715,27 +713,38 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             os.makedirs(per_epoch_save_dir, exist_ok=True)
             
             scores = self._compute_metrics(labels, preds, per_epoch_save_dir, ids=ids)
-            macro_ovr_auc = scores["macro-ovr-auc"]
-            self.current_epoch_metrics[target_metric] = scores[target_metric]
-            self.current_epoch_metrics["macro-ovr-auc"] = macro_ovr_auc
-            self.log_macro_auc_ovr(self.current_epoch,macro_ovr_auc)  
+            self.current_epoch_metrics[self.target_score] = scores[self.target_score]
+            self.log_target_score(self.current_epoch,self.current_epoch_metrics[self.target_score])
+            
 
+            # Finding new best validation loss/target metric
             if avg_loss < self.best_val_loss:
                 self.best_val_loss = avg_loss
                 new_best_loss = True
-            if is_new_best(self.current_epoch_metrics[target_metric],self.best_target_metric):
-                self.best_target_metric = target_score
-                new_best_target_metric = True
-            if macro_ovr_auc > self.best_macro_ovr_auc:
-                self.best_macro_ovr_auc = macro_ovr_auc
-                new_best_macro_ovr_auc = True
+
+            if FinetuningExperiment._is_new_best_score(
+                score_type=self.target_score,
+                best = self.best_target_score, 
+                candidate = self.current_epoch_metrics[self.target_score],
+                ):
+                    self.best_target_score = self.current_epoch_metrics[self.target_score]
+                    new_best_target_score = True
+
+            # Update
             if  self.scheduler_config.get('type',None) == 'plateau':
-                step_metric_name = self.scheduler_config['step_metric']
-                if step_metric_name in scores.keys():
-                    step_metric_value = scores[step_metric_name]
-                else :
+                if self.scheduler_config['step_on'] in scores:
+                    # Learning rate policy based on a score/metric
+                    step_metric_value = scores[self.scheduler_config['step_on']]
+                elif  self.scheduler_config['step_on'] == 'val':
+                    # Learning rate policy based on validation loss (classic)
                     step_metric_value = avg_loss
+                else : 
+                    # Not valid, but should be detected earlier
+                    raise NotImplementedError(f"Can't step on {self.scheduler_config['step_on']} because this value is not being calculated.")
+                
                 self.scheduler.step(step_metric_value)
+                
+                # Logging leraning rate
                 if self.lr_logging_interval is not None:
                     self.log_lr(self.current_epoch) 
 
@@ -754,7 +763,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
         # Save checkpoints
         save_conditions = [self.save_which_checkpoints == 'all',
                            self.save_which_checkpoints == 'best-val-loss' and new_best_loss,
-                           self.save_which_checkpoints == 'best-macro-ovr-auc' and new_best_macro_ovr_auc,
+                           self.save_which_checkpoints == f'best-{self.target_score}' and new_best_target_score,
                            self.save_which_checkpoints == 'best-smooth-rank' and new_best_smooth_rank,
                            self.save_which_checkpoints.startswith('every-') and (self.current_epoch + 1) % int(self.save_which_checkpoints.split('-')[1]) == 0,
                            self.save_which_checkpoints.startswith('last-') and (self.current_epoch + 1) > self.num_epochs - int(self.save_which_checkpoints.split('-')[1])]
@@ -835,6 +844,50 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
 
         else:
             raise ValueError(f"Scheduler type must be a string or a callable, got {self.scheduler_config['type']} instead.")
+
+    @staticmethod
+    def _is_new_best_score(score_type: str, best: float, curr_val: float) -> bool:
+        """
+        Decide whether curr_val is a new best score given the score type.
+
+        - For most metrics, higher is better.
+        - For 'val-loss', lower is better.
+        - For unknown score types, warn and assume higher is better.
+        """
+
+        # Metrics where LOWER is better
+        lower_is_better = {"val-loss"}
+
+        if score_type in lower_is_better:
+            return curr_val < best
+
+        # Known metrics where HIGHER is better
+        higher_is_better = {
+            "macro-ovr-auc",
+            "macro-ovo-auc",
+            "macro-precision",
+            "macro-recall",
+            "macro-f1",
+            "weighted-precision",
+            "weighted-recall",
+            "weighted-f1",
+            "acc",
+            "bacc",
+            "weighted_kappa",
+        }
+
+        if score_type in higher_is_better:
+            return curr_val > best
+
+        # Fallback: unknown metric
+        warnings.warn(
+            f"Score type '{score_type}' not recognised. "
+            "Assuming higher is better.",
+            RuntimeWarning,
+        )
+        return curr_val > best
+
+
 
     def _init_optimizer(self):
         '''

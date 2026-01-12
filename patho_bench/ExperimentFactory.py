@@ -277,7 +277,8 @@ class ExperimentFactory:
                  early_stop : bool = False,
                  early_stop_policy : str = "best-val-loss",
                  patience : int = 3,
-                 halt_training_on_folder_early_stop : bool = False
+                 halt_training_on_folder_early_stop : bool = False,
+                 target_score = "macro-ovr-auc",
         ):
         
         ###### Get dataset ################################################################
@@ -363,7 +364,8 @@ class ExperimentFactory:
             early_stop = early_stop,
             early_stop_policy=early_stop_policy,
             patience = patience,
-            halt_training_on_folder_early_stop=halt_training_on_folder_early_stop
+            halt_training_on_folder_early_stop=halt_training_on_folder_early_stop,
+            target_score=target_score
         )
         
         if external_split is None:
@@ -630,6 +632,7 @@ def get_scheduler_basic_config(scheduler_type : str):
         if scheduler_type == 'gigapath':
             from patho_bench.optim.GigaPathOptim import CustomLRScheduler
             scheduler_config = {
+                'scheduler_name' : 'gigapath',
                 'type': CustomLRScheduler,
                 'warmup_epochs': 1,
                 'min_lr': 0.000001,
@@ -637,12 +640,14 @@ def get_scheduler_basic_config(scheduler_type : str):
             }
         elif scheduler_type == 'cosine':
             scheduler_config = {
+                'scheduler_name' : 'cosine',
                 'type': 'cosine',
                 'eta_min': 1e-8,
                 'step_on': 'accumulation-step'
             } 
         elif scheduler_type == 'step':
             scheduler_config = {
+                'scheduler_name' : 'step',
                 'type': 'step',
                 'gamma': 0.1,
                 'milestones' : [2,5,15,27],
@@ -650,6 +655,7 @@ def get_scheduler_basic_config(scheduler_type : str):
             }
         elif scheduler_type == "plateau":
             scheduler_config = {
+                'scheduler_name' : 'step',
                 'type' : 'plateau',
                 'mode' : 'max',
                 'factor' : 1e-1,
