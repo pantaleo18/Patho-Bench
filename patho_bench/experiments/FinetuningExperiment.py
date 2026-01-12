@@ -253,7 +253,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
 
             # === VALIDAZIONE IMMEDIATA DEL FOLD ===
             scores = self._eval_single_fold(fold_idx=self.current_iter)
-            print(f"{self.current_iter}-th fold performance:\n{scores}")
+            print(f"{self.current_iter + 1 }-th fold performance:\n{scores}")
               
         json_path = os.path.join(self.results_dir, "durations.json")
         with open(json_path, "w") as f:

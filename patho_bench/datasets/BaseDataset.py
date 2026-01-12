@@ -4,6 +4,7 @@ import copy
 import h5py
 import os
 from patho_bench.config.ConfigMixin import ConfigMixin
+import random
 
 """
 This is the BaseDataset class, which is inherited by all dataset classes.
@@ -206,6 +207,7 @@ class BaseDataset(torch.utils.data.Dataset, ConfigMixin):
         '''
         # Should probably be moved to child datasets or standalone class.
         if sampler == 'sequential':
+            # Dangerous for training, because it keeps feeding data in the same order across epochs
             return torch.utils.data.SequentialSampler(self)
         elif sampler == 'random':
             return torch.utils.data.RandomSampler(self)
@@ -239,6 +241,11 @@ class BaseDataset(torch.utils.data.Dataset, ConfigMixin):
         if subset_dataset is None:
             return None
 
+
+        g = torch.Generator()
+        g.manual_seed(42)
+
+
         return torch.utils.data.DataLoader(
             subset_dataset,
             batch_size=len(subset_dataset) if batch_size is None else batch_size,
@@ -247,6 +254,11 @@ class BaseDataset(torch.utils.data.Dataset, ConfigMixin):
             collate_fn=subset_dataset.collate_fn,
             pin_memory=True,
             persistent_workers=True,
+            generator=g, 
+            worker_init_fn=seed_worker
         )
-    
-    
+
+def seed_worker(worker_id):
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)

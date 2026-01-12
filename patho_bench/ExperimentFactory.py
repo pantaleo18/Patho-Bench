@@ -12,7 +12,7 @@ from patho_bench.experiments.GeneralizabilityExperimentWrapper import Generaliza
 from patho_bench.TrainableSlideEncoder import (
     DefaultTrainableSlideEncoder, 
     im4MECTrainableSlideClassifier, 
-    ABMILmillabTrainableSlideClassifier,
+    FeatherTrainableSlideClassifier,
     CLAMTrainableSlideClassifier
 )
 
@@ -335,7 +335,7 @@ class ExperimentFactory:
     def _get_model_constructor(model_name : str):
         if "millab" in model_name:
             if "abmil" in model_name:
-                return ABMILmillabTrainableSlideClassifier
+                return FeatherTrainableSlideClassifier
             if "clam" in model_name:
                 return CLAMTrainableSlideClassifier
         elif model_name == 'im4MEC':
@@ -350,11 +350,8 @@ class ExperimentFactory:
         model_name_cleaned = model_name.replace("millab:", "")
         num_classes = len(task_info['label_dict'])
 
-        if model_constructor is ABMILmillabTrainableSlideClassifier:
-            
+        if model_constructor is FeatherTrainableSlideClassifier:
             slide_classifier = create_model(model_name_cleaned, from_pretrained=True, num_classes=num_classes)
-            print(slide_classifier)
-            print(f"{type(slide_classifier) = }")
 
             classifier_args = {
                 'slide_classifier': slide_classifier,
@@ -362,8 +359,8 @@ class ExperimentFactory:
                 'task_name': task_info['task_col'],
                 'num_classes': num_classes,
                 'loss': loss,
-                'freeze_backbone' : model_kwargs['freeze_backbone'],
                 'label_dict' : task_info['label_dict'],
+                **model_kwargs
             }
         
         else : 

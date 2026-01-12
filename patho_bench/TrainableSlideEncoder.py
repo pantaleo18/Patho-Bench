@@ -175,7 +175,7 @@ class im4MECTrainableSlideClassifier(nn.Module):
         else:
             raise NotImplementedError(f"Output mode {output} non implementato")
 
-class ABMILmillabTrainableSlideClassifier(nn.Module):
+class FeatherTrainableSlideClassifier(nn.Module):
     """
     Wrapper per modelli MIL-Lab (es. ABMIL) compatibile con FinetuningExperiment.
     """
@@ -189,12 +189,16 @@ class ABMILmillabTrainableSlideClassifier(nn.Module):
         loss,
         label_dict: dict,
         device,
+        dropout : float,
         freeze_backbone: bool = False,
         debug : bool = False,
     ):
         super().__init__()
 
         self.slide_classifier = copy.deepcopy(slide_classifier) # Deep copy to avoid to modify original model while cross-validating.
+        set_dropout(self.slide_classifier, dropout)
+        print(f"CLASSIFIER's architecture= {self.slide_classifier}")
+
         self.post_pooling_dim = post_pooling_dim
         self.task_name = task_name
         self.num_classes = num_classes
@@ -294,7 +298,6 @@ class ABMILmillabTrainableSlideClassifier(nn.Module):
 
         return loss_val, info
 
-
 class CLAMTrainableSlideClassifier(nn.Module):
     """
     Wrapper per CLAMSB compatibile con FinetuningExperiment.
@@ -314,7 +317,7 @@ class CLAMTrainableSlideClassifier(nn.Module):
     ):
         super().__init__()
 
-        self.slide_classifier = slide_classifier
+        self.slide_classifier = copy.deepcopy(slide_classifier)
         self.post_pooling_dim = post_pooling_dim
         self.task_name = task_name
         self.num_classes = num_classes
@@ -389,3 +392,8 @@ class CLAMTrainableSlideClassifier(nn.Module):
         else:
             raise ValueError(f"Invalid output type: {output}")
 
+
+def set_dropout(model: nn.Module, p: float):
+    for m in model.modules():
+        if isinstance(m, torch.nn.Dropout):
+            m.p = p
