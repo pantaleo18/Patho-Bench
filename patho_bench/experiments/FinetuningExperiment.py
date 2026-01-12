@@ -54,6 +54,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                  early_stop_policy : str = "best-val-err",
                  patience : int = 3,
                  halt_training_on_folder_early_stop : bool = False,
+                 target_metric : str = "macro-ovr_auc",
                  **kwargs):
         """
         Base class for all experiments.
@@ -103,6 +104,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
         self.early_stop_policy = early_stop_policy
         self.patience = patience
         self.halt_training_on_folder_early_stop = halt_training_on_folder_early_stop
+        self.target_metric = target_metric
         
         # Set kwargs as extra attributes for saving in config.json
         for key, value in kwargs.items():
@@ -155,8 +157,9 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
 
             ### Initialize best loss and rank
             self.best_val_loss = float('inf')    # Initialize to large number
-            self.best_macro_ovr_auc = -1 # Initialize to large number
-            self.best_smooth_rank = 0            # Initialize to 0
+            self.best_target_metric = -1 # Inizialize to out-of-range number
+            self.best_macro_ovr_auc = -1 # Initialize to out-of-range number
+            self.best_smooth_rank = 0    # Initialize to 0
 
             ### Prepare epoch loop
             if self.view_progress == 'bar':
@@ -615,12 +618,13 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
         all_losses = []
         all_info = [] # This is additional info returned by the model along with the loss (e.g. predictions, targets, etc.)
         new_best_loss = False
+        new_best_target_metric =False
         new_best_macro_ovr_auc = False
-        new_best_smooth_rank = False #(?)
+        new_best_smooth_rank = False
         num_samples_processed = 0
         num_gradient_steps = 0
 
-        total_batches = len(self.dataloaders[self.mode])  #MV added
+        total_batches = len(self.dataloaders[self.mode])
         
         optimizer_skipped = False
         
@@ -712,17 +716,26 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             
             scores = self._compute_metrics(labels, preds, per_epoch_save_dir, ids=ids)
             macro_ovr_auc = scores["macro-ovr-auc"]
+            self.current_epoch_metrics[target_metric] = scores[target_metric]
             self.current_epoch_metrics["macro-ovr-auc"] = macro_ovr_auc
             self.log_macro_auc_ovr(self.current_epoch,macro_ovr_auc)  
 
             if avg_loss < self.best_val_loss:
                 self.best_val_loss = avg_loss
                 new_best_loss = True
+            if is_new_best(self.current_epoch_metrics[target_metric],self.best_target_metric):
+                self.best_target_metric = target_score
+                new_best_target_metric = True
             if macro_ovr_auc > self.best_macro_ovr_auc:
                 self.best_macro_ovr_auc = macro_ovr_auc
                 new_best_macro_ovr_auc = True
             if  self.scheduler_config.get('type',None) == 'plateau':
-                self.scheduler.step(macro_ovr_auc)
+                step_metric_name = self.scheduler_config['step_metric']
+                if step_metric_name in scores.keys():
+                    step_metric_value = scores[step_metric_name]
+                else :
+                    step_metric_value = avg_loss
+                self.scheduler.step(step_metric_value)
                 if self.lr_logging_interval is not None:
                     self.log_lr(self.current_epoch) 
 
