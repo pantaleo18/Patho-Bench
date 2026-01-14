@@ -54,7 +54,6 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                  early_stop_policy : str = "best-val-err",
                  patience : int = 3,
                  halt_training_on_folder_early_stop : bool = False,
-                 target_score : str = "macro-ovr_auc",
                  **kwargs):
         """
         Base class for all experiments.
@@ -104,7 +103,8 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
         self.early_stop_policy = early_stop_policy
         self.patience = patience
         self.halt_training_on_folder_early_stop = halt_training_on_folder_early_stop
-        self.target_score = target_score
+        self.target_score = None
+        self._target_score_full_name = None
         
         # Set kwargs as extra attributes for saving in config.json
         for key, value in kwargs.items():
@@ -114,6 +114,14 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
         if self.save_which_checkpoints == 'best-val-loss':
             assert self.dataset.get_subset(iteration = 0, fold = 'val') is not None, "Split must contain validation samples if save_which_checkpoints is 'best-val-loss'."
 
+        # Monitor save-target-score if needed.
+        if self.save_which_checkpoints.startswith("best"):
+            parts = self.save_which_checkpoints.split("-")
+            if 'val' not in parts:
+                # Save policy based on a metric.
+                self.target_score = parts[-1]
+                self._target_score_full_name =  "-".join(parts[1:])
+            
     def train(self):
         '''
         Runs training (and optionally validation) epochs for all folds of the experiment.
@@ -134,7 +142,6 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
 
             ### Initialize train and val dataloaders
             self.dataloaders = {mode: self.dataset.get_dataloader(self.current_iter, mode, batch_size=self.batch_size) for mode in ['train', 'val']}
-            
             ### Initialize model (type: TrainableSlideEncoder)
             self.model = self.model_constructor(**self.model_kwargs, device = self.device)
             self.save_model_architecture(self.model, os.path.join(self.results_dir, f'model.txt'))
@@ -145,7 +152,8 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
 
             self.global_opt_step = 0  
             if self.lr_logging_interval is not None: 
-                self.log_lr(0)
+                self.log_lr(self.global_opt_step)
+            self.loss_scale = set()
 
             ### Prepare grad scaler
             # Only use GradScaler for FP16 training. bfloat16 does not require GradScaler: https://discuss.pytorch.org/t/bfloat16-training-explicit-cast-vs-autocast/202618/8
@@ -171,12 +179,16 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             impatient_counter = 0
             prev_gen_error = float('inf') 
             early_stop_trigger = False
-            
+            self.fold_training_epochs = 0 
+
             for self.current_epoch in self.loop:
+
+                self.fold_training_epochs += 1 
 
                 # epoch = 0,1,...,num_epochs
                 epoch_loss = {'train' : None, 'val' : None }
                 new_best_loss = {'train' : None, 'val' : None}
+                new_best_target = {'train' : None, 'val' : None}
                 total_duration = {'train': 0, 'val': 0 }
 
                 for self.mode in ['train', 'val']:
@@ -189,18 +201,22 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
 
                         # Epoch core
                         start = time.time()
-                        new_best_loss[self.mode], epoch_loss[self.mode] = \
+                        new_best_loss[self.mode], epoch_loss[self.mode], new_best_target[self.mode], _ = \
                             self._run_single_epoch()
                         end = time.time()
-                        # --- dopo il run_single_epoch() ---
+    
                         duration = end - start
-                        duration_str = str(timedelta(seconds=int(duration)))
+                        if self.view_progress == "verbose": 
+                            print(f"[FOLD {self.current_iter}-{self.mode}] Finished epoch {self.current_epoch} in {str(timedelta(seconds=int(duration)))}")
 
-                        if self.view_progress == 'verbose':
-                            print(
-                                f"Finished epoch = {self.current_epoch} "
-                                f"in {duration_str} ({self.mode})"
-                            )    
+                    
+                        # First learning rate
+                        if self.current_epoch == 0 :
+                            self.log_lr(self.global_opt_step) # equiv. to 0
+                        
+                        # Update learning rate at the end of epoch if step_on is 'epoch', after validation (train is equivalent)
+                        self._lr_step(do_step = self.scheduler_config['step_on'] == 'epoch' and self.mode == "val")
+                        
                     # Store duration
                     total_duration[self.mode] += duration
                 
@@ -208,54 +224,49 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                 self.durations.append({
                     self.current_iter : {
                         self.current_epoch :{
-                        "start": start,
-                        "stop": end,
-                        "duration_train": total_duration['train'],
-                        "duration_val": total_duration['val'],
+                        "train": total_duration['train'],
+                        "val": total_duration['val'],
                         }
                     }
                 })
 
+
                 current_gen_err = epoch_loss['val'] - epoch_loss['train']
+                
+                if self.early_stop :
 
-                if self.early_stop and not new_best_loss['val']:
-                    # Update or reset the counter
-                    if self.early_stop_policy == "best-val-loss":
-                        impatient_counter  += 1 
-
-                    # The generalizzation-error early stop 
-                    # monitors the generalization error
-                    # and stops the training if it gets worse
-                    # WITHOUT finding new best loss
-                    elif self.early_stop_policy == "er":
-                        impatient_counter = \
-                            impatient_counter + 1 if (current_gen_err > prev_gen_error) \
-                            else 0
-                        # NB: we reset at any sign of improvement!
-                    else :
-                        #TODO
-                        pass
+                    if self.early_stop_policy ==  "best-checkpoint":
+                        impatient_counter = impatient_counter + 1 if not new_best_target['val'] else 0
                     
+                    elif self.early_stop_policy == "best-val-loss" :
+                        impatient_counter = impatient_counter + 1 if not new_best_loss['val'] else 0
+                    
+                    elif self.early_stop_policy == "er":
+                        if not new_best_loss['val'] and current_gen_err > prev_gen_error:
+                            impatient_counter += 1
+                        else:
+                            impatient_counter = 0
+
+                    else :
+                        warnings.warn(f"{self.early_stop_policy} not implemented yet. Early stop will have no effect")
+                        impatient_counter = -1
+                            
                     # Running out of patience?
-                    early_stop_trigger = impatient_counter >= self.patience
+                    early_stop_trigger = impatient_counter > self.patience
                     
                     if early_stop_trigger:
                         warnings.warn(f"Early stop criteria ({self.early_stop_policy}) met.")
                         break
-                else :
-                    # Any improvement in validation resets impatience
-                    impatient_counter = 0 
-                
-                prev_gen_error = current_gen_err
-                
-            # TO BE DEPRECATED: stops the whole training if this condition
-            # is met.
-            if self.early_stop and early_stop_trigger and self.halt_training_on_folder_early_stop:
-                warnings.warn(f"halt_training_on_early_stop is deprecated {self.current_epoch}")
+
+                    prev_gen_error = current_gen_err
+            
+            # Deprecated
+            if self.halt_training_on_folder_early_stop:
+                warnings.warn(f"halt_training_on_early_stop is deprecated")
 
             # === VALIDAZIONE IMMEDIATA DEL FOLD ===
             scores = self._eval_single_fold(fold_idx=self.current_iter)
-            print(f"{self.current_iter}-th fold performance:\n{scores}")
+            self.print_fold_training_summary(scores)
               
         json_path = os.path.join(self.results_dir, "durations.json")
         with open(json_path, "w") as f:
@@ -333,22 +344,23 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             warnings.warn("No per-fold metrics found. Summary cannot be computed.")
             return
 
-        # Aggrega le metriche
         summary = {}
-        keys = all_scores_across_folds[0].keys()
-        scores_array = {k: np.array([fold[k] for fold in all_scores_across_folds], dtype=float)
-                        for k in keys}
 
-        for k in keys:
-            vals = scores_array[k]
+        for k, v in all_scores_across_folds[0].items():
+            # Skip nested dictionaries (e.g. precision, recall, f1)
+            if isinstance(v, dict):
+                continue
+
+            vals = np.array([fold[k] for fold in all_scores_across_folds], dtype=float)
             mean = float(np.mean(vals))
-            std = float(np.std(vals, ddof=1))  # campionario
+            std = float(np.std(vals, ddof=1))
             se = float(std / np.sqrt(len(vals)))
+
             summary[k] = {
                 "mean": mean,
                 "std": std,
                 "se": se,
-                "formatted": f"{mean:.3f} ± {std:.3f} ± {se:.3f}"
+                "formatted": f"{mean:.3f} ± {std:.3f}"
             }
 
         # Salva summary finale
@@ -404,9 +416,6 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             else:
                 # If multiple folds and multiple samples per fold, save per-fold results
                 per_fold_save_dir = os.path.join(self.results_dir, f'{split}_metrics', f'fold_{self.current_iter}')
-                scores = self._compute_metrics(labels, preds, per_fold_save_dir)
-                all_scores_across_folds.append(scores)
-
                 os.makedirs(per_fold_save_dir, exist_ok=True)  # MV added
                 scores = self._compute_metrics(labels, preds, per_fold_save_dir, ids=ids)  # MV ids added
                 all_scores_across_folds.append(scores)
@@ -497,7 +506,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
 
         return labels_all, preds_all, ids_all
     
-    def _compute_metrics(self, labels, preds, save_dir, ids=None):  # MV ids added
+    def _compute_metrics(self, labels, preds, save_dir = None, ids=None):  # MV ids added
         """
         Save metrics to file and return a dictionary of metrics.
         
@@ -508,29 +517,35 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
         """
         if self.task_type == 'classification':
             self.auc_roc(labels, preds, self.model_kwargs['num_classes'], 
-                        saveto=os.path.join(save_dir, "roc_curves.png"),
+                        saveto=os.path.join(save_dir, "roc_curves.png") if save_dir is not None else save_dir,
                         label_dict=self.model_kwargs['label_dict'],color_map = self.color_map)
             self.precision_recall(labels, preds, self.model_kwargs['num_classes'], 
-                                saveto=os.path.join(save_dir, "pr_curves.png"),
+                                saveto=os.path.join(save_dir, "pr_curves.png") if save_dir is not None else save_dir,
                                 label_dict=self.model_kwargs['label_dict'],color_map = self.color_map)
             self.confusion_matrix(labels, preds, self.model_kwargs['num_classes'], 
-                                saveto=os.path.join(save_dir, "confusion_matrix.png"),
+                                saveto=os.path.join(save_dir, "confusion_matrix.png") if save_dir is not None else save_dir,
                                 label_dict=self.model_kwargs['label_dict'])
             scores = self.classification_metrics(labels, preds, self.model_kwargs['num_classes'], 
-                                                saveto=os.path.join(save_dir, "metrics.json"),
+                                                saveto=os.path.join(save_dir, "metrics.json") if save_dir is not None else save_dir,
                                                 label_dict=self.model_kwargs['label_dict'])
-            np.savez_compressed(  # MV ADDED: Save labels and preds and ids together as a single .npz file
-                os.path.join(save_dir, "labels_preds.npz"),
-                labels=np.array([labels], dtype=object),
-                preds=np.array([preds], dtype=object),
-                ids=np.array([ids], dtype=object) if ids is not None else np.array([None], dtype=object),
-            )
+            if save_dir is not None:
+                np.savez_compressed(  # MV ADDED: Save labels and preds and ids together as a single .npz file
+                    os.path.join(save_dir, "labels_preds.npz"),
+                    labels=np.array([labels], dtype=object),
+                    preds=np.array([preds], dtype=object),
+                    ids=np.array([ids], dtype=object) if ids is not None else np.array([None], dtype=object),
+                )
             return scores['overall']
         
         elif self.task_type == 'survival':
-            scores = self.survival_metrics(labels['survival_event'], labels['survival_time'], preds, saveto = os.path.join(save_dir, "metrics.json"))
+            scores = self.survival_metrics(
+                labels['survival_event'], 
+                labels['survival_time'], 
+                preds, 
+                saveto = os.path.join(save_dir, "metrics.json") if save_dir is not None else save_dir
+            )
             # Optional MV added, functionality not checked yet: also store ids if present
-            if ids is not None:
+            if ids is not None and save_dir is not None:
                 np.savez_compressed(
                     os.path.join(save_dir, "labels_preds.npz"),
                     ids=np.array([ids], dtype=object),
@@ -617,13 +632,14 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
         all_losses = []
         all_info = [] # This is additional info returned by the model along with the loss (e.g. predictions, targets, etc.)
         new_best_loss = False
-        new_best_target_score =False
+        new_best_target_score = False
         new_best_smooth_rank = False
         num_samples_processed = 0
         num_gradient_steps = 0
+        scores = {}
 
         total_batches = len(self.dataloaders[self.mode])
-        
+    
         optimizer_skipped = False
         
         # Loop over each batch in loader
@@ -639,64 +655,34 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                 all_losses.append(loss.cpu().detach().numpy())
                 all_info.extend(info)
 
-                # Backward pass if training (note that this is done outside autocast context manager)
                 if self.mode == 'train':
-                    self.grad_scaler.scale(loss / self.accumulation_steps).backward()
-                    if (batch_idx + 1) % self.accumulation_steps == 0:
+                    is_last_batch = (batch_idx + 1 == total_batches)
+                    scale = self._compute_scale(batch_idx)
+                    self.grad_scaler.scale(loss / scale).backward()
+
+                    if (batch_idx + 1) % self.accumulation_steps == 0 or is_last_batch:
                         self.grad_scaler.step(self.optimizer)
                         current_scale = self.grad_scaler.get_scale()
                         self.grad_scaler.update()
-                        optimizer_skipped = (self.grad_scaler.get_scale() < current_scale) # If optimizer step was skipped due to gradient overflow, then scale will be reduced. In this case we must skip the scheduler step as well. See https://discuss.pytorch.org/t/optimizer-step-before-lr-scheduler-step-error-using-gradscaler/92930/8
-                        self.optimizer.zero_grad()
-                        num_gradient_steps += 1                        
-                        
-                        # Update scheduler on accumulation step if step_on is 'accumulation-step'
-                        if self.scheduler_config and self.scheduler_config['step_on'] == 'accumulation-step' and not optimizer_skipped:
-                            try:
-                                # Default API for built-in LR schedulers
-                                self.scheduler.step()
-                                self.global_opt_step += 1
-                                if self.global_opt_step % self.lr_logging_interval == 0:
-                                    self.log_lr(self.global_opt_step)
-                            except:
-                                raise Exception(f"Error stepping scheduler on accumulation-step.")
 
-                # Update progress bar
-                if self.view_progress == 'bar' and (batch_idx + 1) % self.accumulation_steps == 0:
-                    self.loop.set_postfix(num_batches = f'{batch_idx + 1}/{len(self.dataloaders[self.mode])}',
-                                        num_samples = num_samples_processed,
-                                        avg_loss = f'{(sum(all_losses)/num_gradient_steps):.4f}')
+                        optimizer_skipped = self.grad_scaler.get_scale() < current_scale
 
-            # -------- flush remainder (last partial window non updated) --------
-            if self.mode == 'train':
-                remainder = total_batches % self.accumulation_steps
-                if remainder != 0:
-                    self.grad_scaler.step(self.optimizer)
-                    current_scale = self.grad_scaler.get_scale()
-                    self.grad_scaler.update()
-                    optimizer_skipped = (self.grad_scaler.get_scale() < current_scale)
-                    self.optimizer.zero_grad(set_to_none=True)
-                    num_gradient_steps += 1
+                        self.optimizer.zero_grad(set_to_none=True)
+                        num_gradient_steps += 1
 
-                    if self.scheduler_config and self.scheduler_config['step_on'] == 'accumulation-step' and not optimizer_skipped:
-                            self.scheduler.step()
-                            self.global_opt_step += 1
-                            if self.global_opt_step % self.lr_logging_interval == 0:
-                                self.log_lr(self.global_opt_step)
+                        self._lr_step(
+                            do_step=(
+                                self.scheduler_config['step_on'] == 'accumulation-step'
+                                and not optimizer_skipped
+                            )
+                        )
 
                 if self.view_progress == 'bar':
-                    # Aggiorna la barra per mostrare il totale corretto
                     self.loop.set_postfix(
-                        num_batches = f'{total_batches}/{total_batches}',
-                        num_samples = num_samples_processed,
-                        avg_loss = f'{(sum(all_losses)/num_gradient_steps):.4f}'
+                        batch=f'{batch_idx + 1}/{total_batches}',
+                        samples=num_samples_processed,
+                        loss=f'{loss.item():.4f}'
                     )
-
-        # Update scheduler at end of epoch if step_on is 'epoch'
-        if self.mode == 'train' and self.scheduler_config and self.scheduler_config['step_on'] == 'epoch' and not optimizer_skipped:
-            self.scheduler.step()
-            if self.lr_logging_interval is not None:
-                self.log_lr(self.current_epoch) 
 
         # Save current epoch metrics
         self.current_epoch_metrics = {
@@ -707,48 +693,31 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
 
         # Update best val loss
         if self.mode == 'val':
-            avg_loss = np.mean(all_losses)
+            avg_loss = self.current_epoch_metrics['avg_loss']
             labels, preds, ids = self._accumulate_preds(self.dataloaders[self.mode], self.model)
-            per_epoch_save_dir = os.path.join(self.results_dir,'current_epoch_metrics')
-            os.makedirs(per_epoch_save_dir, exist_ok=True)
             
-            scores = self._compute_metrics(labels, preds, per_epoch_save_dir, ids=ids)
-            self.current_epoch_metrics[self.target_score] = scores[self.target_score]
-            self.log_target_score(self.current_epoch,self.current_epoch_metrics[self.target_score])
+            scores = self._compute_metrics(
+                labels = labels,
+                preds = preds,
+                save_dir=None,
+                ids=ids
+            )
+            self.log_scores(self.current_epoch,scores)
             
-
             # Finding new best validation loss/target metric
             if avg_loss < self.best_val_loss:
                 self.best_val_loss = avg_loss
                 new_best_loss = True
 
-            if FinetuningExperiment._is_new_best_score(
-                score_type=self.target_score,
-                best = self.best_target_score, 
-                candidate = self.current_epoch_metrics[self.target_score],
-                ):
-                    self.best_target_score = self.current_epoch_metrics[self.target_score]
+            if self.target_score:
+                self.log_target_score(self.current_epoch, scores[self.target_score])
+                if self._is_new_best_score(scores.get(self.target_score)):
+                    self.best_target_score = scores[self.target_score]
                     new_best_target_score = True
 
-            # Update
-            if  self.scheduler_config.get('type',None) == 'plateau':
-                if self.scheduler_config['step_on'] in scores:
-                    # Learning rate policy based on a score/metric
-                    step_metric_value = scores[self.scheduler_config['step_on']]
-                elif  self.scheduler_config['step_on'] == 'val':
-                    # Learning rate policy based on validation loss (classic)
-                    step_metric_value = avg_loss
-                else : 
-                    # Not valid, but should be detected earlier
-                    raise NotImplementedError(f"Can't step on {self.scheduler_config['step_on']} because this value is not being calculated.")
-                
-                self.scheduler.step(step_metric_value)
-                
-                # Logging leraning rate
-                if self.lr_logging_interval is not None:
-                    self.log_lr(self.current_epoch) 
-
-        self.compute_extra_metrics()
+            # Update is scheduler is plateau
+            if self.scheduler_config['type'] == 'plateau':
+                self._plateau_step(scores)
 
         # Update best smooth rank
         if isinstance(all_info[0], dict) and 'smooth_rank' in all_info[0].keys():
@@ -763,23 +732,78 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
         # Save checkpoints
         save_conditions = [self.save_which_checkpoints == 'all',
                            self.save_which_checkpoints == 'best-val-loss' and new_best_loss,
-                           self.save_which_checkpoints == f'best-{self.target_score}' and new_best_target_score,
+                           self.save_which_checkpoints == f'best-{self._target_score_full_name}' and new_best_target_score,
                            self.save_which_checkpoints == 'best-smooth-rank' and new_best_smooth_rank,
                            self.save_which_checkpoints.startswith('every-') and (self.current_epoch + 1) % int(self.save_which_checkpoints.split('-')[1]) == 0,
                            self.save_which_checkpoints.startswith('last-') and (self.current_epoch + 1) > self.num_epochs - int(self.save_which_checkpoints.split('-')[1])]
         if any(save_conditions):
-            self.save_checkpoint(self.model, self.save_which_checkpoints, os.path.join(self.results_dir,
-                                                                            'checkpoints', 
-                                                                            f'fold_{self.current_iter}',
-                                                                            f"epoch_{self.current_epoch}.pt"))
-
+            self.save_checkpoint(
+                self.model, 
+                self.save_which_checkpoints, 
+                os.path.join(self.results_dir,
+                'checkpoints', 
+                f'fold_{self.current_iter}',
+                f"epoch_{self.current_epoch}.pt")
+            )
+            
         self.log_loss(self.current_epoch) # Log loss to dashboard on epoch end
         self.log_smooth_rank(self.current_epoch) # Log smooth rank to dashboard on epoch end
 
-        # Save current epoch's metrics
-        # self.save_current_epoch_metrics(os.path.join(self.results_dir,"epoch_metrics.json"))
+        return (
+            new_best_loss, 
+            self.current_epoch_metrics['avg_loss'],
+            new_best_target_score,
+            scores.get(self.target_score),
+        )
+    
+    def _plateau_step(self,scores : dict):
+        step_on = self.scheduler_config.get('step_on')
 
-        return new_best_loss, self.current_epoch_metrics['avg_loss']
+        if step_on is None:
+            metric_to_use = None
+
+        elif step_on == 'val':
+            metric_to_use = self.current_epoch_metrics.get('avg_loss')
+
+        elif step_on in scores:
+            metric_to_use = scores[step_on]
+
+        else:
+            parts = step_on.split('-')
+            if len(parts) == 2:
+                agg, metric_name = parts
+                metric_dict = scores.get(metric_name, {})
+                try: 
+                    metric_to_use = metric_dict[metric_name][agg]
+                except Exception as e:
+                    raise RuntimeError(f"Can't resolve {step_on}. Scheduler Config: {self.scheduler_config}")
+            else:
+                raise RuntimeError(f"Invalid split {step_on}: {parts = }")
+
+        self._lr_step(
+            do_step = True,
+            metric = metric_to_use
+        )
+    
+    def _compute_scale(self, batch_idx : int):
+            """
+            Computes the normalization factor for the current micro-batch loss.
+            """
+            # 1. Identify the current accumulation block (e.g., 0-3 : 0, 4-7 : 4 for accumulation_steps = 4)
+            current_block_start = (batch_idx // self.accumulation_steps) * self.accumulation_steps
+            
+            # 2. Determine the end of the current block
+            # It's either the full accumulation step or the end of the dataset
+            total_batches = len(self.dataloaders[self.mode])
+            current_block_end = min(total_batches, current_block_start + self.accumulation_steps)
+            
+            # 3. The true scale is the actual number of steps in this specific block
+            update_window_length = current_block_end - current_block_start
+
+            # Tracks different scales used, main for debugging purposes
+            self.loss_scale.add(update_window_length)
+            
+            return update_window_length
     
     def _init_scheduler(self):
         
@@ -791,10 +815,10 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             # Using built-in scheduler
             if self.scheduler_config['type'] == 'plateau':
                 stepping_policy = self.scheduler_config['step_on']
-                
+
                 # Breaks if the policy is not valid
-                if stepping_policy not in LoggingMixin.METRICS and stepping_policy != "val":
-                    raise ValueError(f"'{stepping_policy}' is not recognized as a valid metric.")
+                if stepping_policy not in LoggingMixin.SCORES and stepping_policy != "val":
+                    raise ValueError(f"'{stepping_policy}' is not a valid metric.")
 
                 return torch.optim.lr_scheduler.ReduceLROnPlateau(
                     self.optimizer,
@@ -828,6 +852,22 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                     T_0=self.scheduler_config['T_0'],
                     T_mult=self.scheduler_config['T_mult'],
                     eta_min=self.scheduler_config['eta_min'])
+            elif self.scheduler_config['type'] == 'gigapath':
+                from patho_bench.optim.GigaPathOptim import CustomLRScheduler
+                try: 
+                    default_scheduler_args = {
+                        'base_lr': self.optimizer_config['base_lr'],
+                        'max_epochs': self.num_epochs,
+                        'accumulation_steps': self.accumulation_steps,
+                        'len_dataloader': len(self.dataloaders['train']),
+                    }
+                    return CustomLRScheduler(
+                        optimizer=self.optimizer,
+                        default_scheduler_args=default_scheduler_args,
+                        custom_scheduler_args=self.scheduler_config
+                    )
+                except Exception as e:
+                    raise Exception(f"Error initializing custom scheduler: {e}. \nExpected init format: CustomScheduler(optimizer: Optimizer, default_scheduler_args: dict, custom_scheduler_args: dict)")
             else:
                 raise NotImplementedError(f"Scheduler type {self.scheduler_config['type']} not implemented.")
 
@@ -873,30 +913,98 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             return AdamW(param_groups, self.optimizer_config['base_lr'], **extra_kwargs)
         else:
             raise NotImplementedError(f"Optimizer {optimizer_type} not implemented.")
-        
-    @staticmethod
-    def _is_new_best_score(score_type: str, best: float, curr_val: float) -> bool:
-        """
-        Decide whether curr_val is a new best score given the score type.
+         
+    def _lr_step(self,do_step,metric = None):
+        # Step
+        if do_step : 
+            if metric:
+                self.scheduler.step(metric)
+            else:
+                self.scheduler.step()
 
-        - For most metrics, higher is better.
-        - For 'val-loss', lower is better.
-        - For unknown score types, warn and assume higher is better.
-        """
-
+            # Update scheduler
+            self.global_opt_step += 1
+            if self.global_opt_step % self.lr_logging_interval == 0:
+                self.log_lr(self.global_opt_step)
+        else :
+            # Don't step
+            return
+                
+    def _is_new_best_score(self,candidate: float) -> bool:
         # Metrics where LOWER is better
+
+        if candidate is None:
+            return False
+        
         lower_is_better = {"val-loss"}
 
-        if score_type in lower_is_better:
-            return curr_val < best
+        if self.target_score in lower_is_better:
+            return candidate < self.best_target_score
 
-        if score_type in LoggingMixin.METRICS:
-            return curr_val > best
+        if self.target_score in LoggingMixin.SCORES:
+            return candidate > self.best_target_score
 
         # Fallback: unknown metric
         warnings.warn(
-            f"Score type '{score_type}' not recognised. "
+            f"Score type '{self.target_score}' not recognised. "
             "Assuming higher is better.",
             RuntimeWarning,
         )
-        return curr_val > best
+        return candidate > self.best_target_score
+
+    def print_fold_training_summary(self, scores):
+        avg_train, avg_val = self._compute_avg_durations()
+
+        # Dataset stats
+        num_samples_train = len(self.dataloaders['train'].dataset) if self.dataloaders.get('train') else 0
+        num_samples_val   = len(self.dataloaders['val'].dataset) if self.dataloaders.get('val') else 0
+
+        total_batches_train = len(self.dataloaders['train']) if self.dataloaders.get('train') else 0
+        total_batches_val   = len(self.dataloaders['val']) if self.dataloaders.get('val') else 0
+
+        print(f"\n----- TRAINING SUMMARY | FOLD {self.current_iter} -----")
+        print(f"WSIs (train|val)      : {num_samples_train} | {num_samples_val}")
+        print(f"Batches (train|val)   : {total_batches_train} | {total_batches_val}")
+        print("--------------------------")
+        print(f"Batch size            : {self.batch_size}")
+        print(f"Grad accumulation     : {self.accumulation_steps}")
+        print(f"Total batch size      : {self.batch_size * self.accumulation_steps}")
+        print("--------------------------")
+        print(f"Avg TRAIN duration    : {self._fmt_duration(avg_train)}")
+        print(f"Avg VALID duration    : {self._fmt_duration(avg_val)}")
+        print(f"Training epochs       : {self.fold_training_epochs}")
+        print(f"Global opt steps      : {self.global_opt_step}")
+
+        if hasattr(self, "loss_scale"):
+            print(f"Loss scaling factors  : {self.loss_scale}")
+
+        if self.target_score:
+            print(f"{self.target_score:<20}: {scores.get(self.target_score)}")
+
+        print("-----------------------------------------------\n")
+
+    def _compute_avg_durations(self):
+        train_times = []
+        val_times = []
+
+        for entry in self.durations:
+            if self.current_iter not in entry:
+                continue
+
+            fold_data = entry[self.current_iter]
+
+            for _, epoch_data in fold_data.items():
+                if "train" in epoch_data and epoch_data["train"] is not None:
+                    train_times.append(epoch_data["train"])
+                if "val" in epoch_data and epoch_data["val"] is not None:
+                    val_times.append(epoch_data["val"])
+
+        avg_train = sum(train_times) / len(train_times) if train_times else None
+        avg_val = sum(val_times) / len(val_times) if val_times else None
+
+        return avg_train, avg_val
+
+    def _fmt_duration(self, seconds):
+        if seconds is None:
+            return "N/A"
+        return str(timedelta(seconds=int(seconds)))

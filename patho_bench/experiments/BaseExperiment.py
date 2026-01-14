@@ -41,19 +41,17 @@ class BaseExperiment(ConfigMixin):
 
     def get_95_ci(self, all_scores_across_folds):
         '''
-        Calculate 95% CI.
-
-        Args:
-            all_scores_across_folds (list[dict]): List of scores across bootstraps, keys are metric names.
-            
-        Returns:
-            mean (float): Mean of bootstrapped scores.
-            lower (float): Lower bound of 95% CI.
-            upper (float): Upper bound of 95% CI.
+        Calculate 95% CI for scalar metrics only.
         '''
         summary = {}
-        for key in all_scores_across_folds[0].keys():
-            if any([score[key] is None for score in all_scores_across_folds]): # Sometimes scores are mathematically noncomputable, indicated by None
+
+        for key, value in all_scores_across_folds[0].items():
+            # Skip non-scalar metrics (e.g. dicts like precision/recall/f1)
+            if isinstance(value, dict):
+                continue
+
+            # Handle non-computable metrics
+            if any(score[key] is None for score in all_scores_across_folds):
                 summary[key] = {
                     'mean': None,
                     'lower': None,
@@ -61,9 +59,13 @@ class BaseExperiment(ConfigMixin):
                     'formatted': 'N/A'
                 }
                 continue
-            mean = np.mean([score[key] for score in all_scores_across_folds])
-            lower = np.percentile([score[key] for score in all_scores_across_folds], 2.5)
-            upper = np.percentile([score[key] for score in all_scores_across_folds], 97.5)
+
+            values = np.array([score[key] for score in all_scores_across_folds], dtype=float)
+
+            mean = float(np.mean(values))
+            lower = float(np.percentile(values, 2.5))
+            upper = float(np.percentile(values, 97.5))
+
             summary[key] = {
                 'mean': mean,
                 'lower': lower,
@@ -72,31 +74,34 @@ class BaseExperiment(ConfigMixin):
             }
 
         return summary
-        
+
     def get_mean_se(self, all_scores_across_folds):
         '''
-        Calculate mean ± SE.
-
-        Args:
-            all_scores_across_folds (list): List of scores across folds.
-
-        Returns:
-            mean (float): Mean of scores.
-            se (float): Standard error of scores.
+        Calculate mean ± SE for scalar metrics only.
         '''
         summary = {}
-        for key in all_scores_across_folds[0].keys():
-            mean = np.mean([score[key] for score in all_scores_across_folds if score[key] is not None])
-            std = np.std([score[key] for score in all_scores_across_folds if score[key] is not None])
-            se = std / np.sqrt(len(all_scores_across_folds))
+
+        for key, value in all_scores_across_folds[0].items():
+            # Skip non-scalar metrics
+            if isinstance(value, dict):
+                continue
+
+            values = [score[key] for score in all_scores_across_folds if score[key] is not None]
+            values = np.array(values, dtype=float)
+
+            mean = float(np.mean(values))
+            std = float(np.std(values, ddof=1))
+            se = float(std / np.sqrt(len(values)))
+
             summary[key] = {
                 'mean': mean,
-                'std': std,  #MV added because it can be useful 
+                'std': std,
                 'se': se,
                 'formatted': f'{mean:.3f} ± {std:.3f} ± {se:.3f}'
             }
 
         return summary
+
     
     def set_seed(self, seed = 0, disable_cudnn = False):
         '''

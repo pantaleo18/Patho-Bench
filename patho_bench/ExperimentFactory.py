@@ -256,14 +256,10 @@ class ExperimentFactory:
                  bag_size,
                  base_learning_rate,
                  gradient_accumulation,
-                 weight_decay,
                  num_epochs,
-                 scheduler_type: str,
-                 optimizer_type: str,
                  balanced: bool,
                  save_which_checkpoints: str,
                  model_kwargs: dict = {},
-                 layer_decay = None,
                  gpu = -1,
                  batch_size = 1, 
                  scheduler_config : dict = None,
@@ -278,7 +274,6 @@ class ExperimentFactory:
                  early_stop_policy : str = "best-val-loss",
                  patience : int = 3,
                  halt_training_on_folder_early_stop : bool = False,
-                 target_score = "macro-ovr-auc",
         ):
         
         ###### Get dataset ################################################################
@@ -324,19 +319,14 @@ class ExperimentFactory:
             'loss': loss,
             'label_dict' : task_info['label_dict'],
         }
-
-        if scheduler_config is None:
-            scheduler_config = get_scheduler_basic_config(scheduler_type)
-
-        if optimizer_config is None:
-            optimizer_config = get_optimizer_config(
-                optimizer_type,
-                base_learning_rate=base_learning_rate,
-                batch_size=batch_size,
-                gradient_accumulation=gradient_accumulation,
-                layer_decay=layer_decay,
-                weight_decay=weight_decay
-            )
+        
+        optimizer_config = configure_optimizer(
+            optimizer_config,
+            base_learning_rate=base_learning_rate,
+            batch_size=batch_size,
+            gradient_accumulation=gradient_accumulation
+        )
+        scheduler_config = configure_scheduler(scheduler_config)
 
         if isinstance(color_map,str):
             with open(color_map,"r") as fp:
@@ -365,7 +355,6 @@ class ExperimentFactory:
             early_stop_policy=early_stop_policy,
             patience = patience,
             halt_training_on_folder_early_stop=halt_training_on_folder_early_stop,
-            target_score=target_score
         )
         
         if external_split is None:
@@ -404,7 +393,7 @@ class ExperimentFactory:
               early_stop_policy : str = "best-val-loss",
               patience : int = 3,
               halt_training_on_folder_early_stop : bool = False,
-              lr_logging_interval : int = 1
+              lr_logging_interval : int = 1,
             ):
         '''
         Run a hyperparameter sweep for a given experiment configuration.
@@ -627,83 +616,86 @@ def make_list(x):
     '''
     return x if isinstance(x, list) else [x]
 
-def get_scheduler_basic_config(scheduler_type : str):
-            ###### Configure scheduler ################################################################
-        if scheduler_type == 'gigapath':
-            from patho_bench.optim.GigaPathOptim import CustomLRScheduler
-            scheduler_config = {
-                'scheduler_name' : 'gigapath',
-                'type': CustomLRScheduler,
-                'warmup_epochs': 1,
-                'min_lr': 0.000001,
-                'step_on': 'accumulation-step'
-            }
-        elif scheduler_type == 'cosine':
-            scheduler_config = {
-                'scheduler_name' : 'cosine',
-                'type': 'cosine',
-                'eta_min': 1e-8,
-                'step_on': 'accumulation-step'
-            } 
-        elif scheduler_type == 'step':
-            scheduler_config = {
-                'scheduler_name' : 'step',
-                'type': 'step',
-                'gamma': 0.1,
-                'milestones' : [2,5,15,27],
-                'step_on': 'epoch',
-            }
-        elif scheduler_type == "plateau":
-            scheduler_config = {
-                'scheduler_name' : 'step',
-                'type' : 'plateau',
-                'mode' : 'max',
-                'factor' : 1e-1,
-                'patience' : 0,
-                'threshold' : 1e-4,
-                'step_on' : 'val',
-            }
-        else:
-            raise NotImplementedError(
-                f'Scheduler type {scheduler_type} not yet implemented. '
-                'Please choose from "cosine", "step", or "gigapath".'
-            )
-        return scheduler_config
+def configure_scheduler(custom_config: dict = None):
+    json_path = os.path.join(
+        os.path.dirname(__file__),
+        "config",
+        "scheduler.json"
+    )
+    
+    with open(json_path, "r") as f:
+        default_configs = json.load(f)
+    
+    scheduler_type = custom_config.get("type", "cosine") if custom_config else "cosine"
 
-def get_optimizer_config(
-        optimizer_type : str,
-        base_learning_rate : float,
-        batch_size : int, 
-        gradient_accumulation: int,
-        layer_decay : float,
-        weight_decay : float
-    ):
+    if scheduler_type not in default_configs:
+        raise NotImplementedError(
+            f"Scheduler type '{scheduler_type}' not implemented"
+        )
+    
+    scheduler_config = default_configs[scheduler_type].copy()
+
+    if custom_config:
+        scheduler_config.update(custom_config)
+    else:
+        warnings.warn(
+            f"No custom configuration set for scheduler. Using default configuration: {scheduler_config}",
+            RuntimeWarning
+        )
+    
+    return scheduler_config
+
+def configure_optimizer(
+    custom_config: dict = None,
+    base_learning_rate: float = None,
+    batch_size: int = None,
+    gradient_accumulation: int = None
+):
+    json_path = os.path.join(
+        os.path.dirname(__file__),
+        "config",
+        "optimizer.json"
+    )
+
+    with open(json_path, "r") as f:
+        default_configs = json.load(f)
+
+    optimizer_type = custom_config.get("type", "AdamW") if custom_config else "AdamW"
+
+    if optimizer_type not in default_configs:
+        raise NotImplementedError(
+            f"Optimizer type '{optimizer_type}' not implemented"
+        )
+
+    # Config strutturale (JSON + override)
+    optimizer_config = default_configs[optimizer_type].copy()
+
+    # Adding learning rate
+    if base_learning_rate is not None:
+        optimizer_config["base_lr"] = base_learning_rate
+
+
+    if custom_config:
+        optimizer_config.update(custom_config)
+    else:
+        warnings.warn(
+            f"No custom configuration set for optimizer. Using default configuration: {optimizer_config}",
+            RuntimeWarning
+        )
+
+    # Special case for Patho-Bench custom optimizer
     if optimizer_type == 'gigapath':
         from patho_bench.optim.GigaPathOptim import param_groups_lrd
-        optimizer_config = {'type': 'AdamW',
-                            'base_lr': base_learning_rate * ((batch_size * gradient_accumulation) / 256),
-                            'get_param_groups': param_groups_lrd,
-                            'param_group_args': {'layer_decay': layer_decay,
-                                                    'no_weight_decay_list': [],
-                                                    'weight_decay': weight_decay},
-                            }
-    elif optimizer_type == 'AdamW':
         optimizer_config = {
             'type': 'AdamW',
-            'base_lr': base_learning_rate,
-            'weight_decay': weight_decay
+            'base_lr': base_learning_rate * ((batch_size * gradient_accumulation) / 256),
+            'get_param_groups': param_groups_lrd,
+            'param_group_args': {
+                'layer_decay': custom_config.get('layer_decay',0),
+                'no_weight_decay_list': [],
+                'weight_decay': custom_config.get('weight_decay',0)
+            },
         }
-    elif optimizer_type == 'Adam':
-        optimizer_config = {
-            'type': 'Adam',
-            'base_lr': base_learning_rate,
-            'weight_decay': weight_decay
-        }
-    else:
-        raise NotImplementedError(
-            f'Optimizer type {optimizer_type} not yet implemented. '
-            'Please choose from "Adam", "AdamW", or "gigapath".'
-        )
 
     return optimizer_config
 

@@ -141,19 +141,42 @@ class ClassificationMixin:
             macro_ovr_auc = None
             macro_ovo_auc = None
 
+        # Build class-wise metrics dicts
+        precision_dict = {
+            "macro": report["macro avg"]["precision"], 
+            "weighted" : report["weighted avg"]["precision"],
+        }
+        recall_dict = {
+            "macro": report["macro avg"]["recall"],
+            "weighted" : report["weighted avg"]["recall"],
+        }
+        f1_dict = {
+            "macro": report["macro avg"]["f1-score"],
+            "weighted" : report["weighted avg"]["f1-score"],
+        }
+        support_dict = {
+            "macro" : report["macro avg"]["support"],
+            "weighted" : report["weighted avg"]["support"],
+        }
+
+        for class_idx in range(num_classes):
+            class_name = label_dict[class_idx] if label_dict else str(class_idx)
+            precision_dict[class_name] = report[str(class_idx)]["precision"]
+            recall_dict[class_name] = report[str(class_idx)]["recall"]
+            f1_dict[class_name] = report[str(class_idx)]["f1-score"]
+            support_dict[class_name] = report[str(class_idx)]["support"]
+
+        # Update overall scores
         scores["overall"] = {
             "macro-ovr-auc": macro_ovr_auc,
             "macro-ovo-auc": macro_ovo_auc,
-            "macro-precision": report["macro avg"]["precision"],
-            "macro-recall": report["macro avg"]["recall"],
-            "macro-f1": report["macro avg"]["f1-score"],
-            "weighted-precision": report["weighted avg"]["precision"],
-            "weighted-recall": report["weighted avg"]["recall"],
-            "weighted-f1": report["weighted avg"]["f1-score"],
+            "precision": precision_dict,
+            "recall": recall_dict,
+            "f1": f1_dict,
+            "support": support_dict,
             "acc": np.mean(np.array(y_true) == np.array(y_pred)),
             "bacc": balanced_accuracy_score(y_true, y_pred),
             "weighted_kappa": cohen_kappa_score(y_true, y_pred, weights="quadratic"),
-            "support": report["macro avg"]["support"]
         }
 
         # Save scores to JSON
@@ -196,14 +219,6 @@ class ClassificationMixin:
             return np.argmax(preds, axis=1)
         
     def _resolve_color_map(self, color_map, num_classes, label_dict=None):
-        """
-        Returns color list indexed by class (0..num_classes-1).
-
-        Supports:
-        - list/tuple of colors
-        - seaborn/matplotlib palette name
-        - dict[label_name] = color
-        """
 
         # Case 1: user provides a dict of label_name: color
         if isinstance(color_map, dict):

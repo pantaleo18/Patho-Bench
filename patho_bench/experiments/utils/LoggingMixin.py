@@ -1,10 +1,12 @@
 import json
 import os
+from pathlib import Path
 import matplotlib.pyplot as plt
 from patho_bench.config.JSONSaver import JSONsaver
 import torch
 import torch.nn as nn
-
+import seaborn as sns
+sns.set_style("white")
 
 """
 This file contains the LoggingMixin class which provides methods for logging metrics and saving checkpoints during training.
@@ -25,19 +27,18 @@ Methods:
 
 class LoggingMixin:
 
-    METRICS = {
+    SCORES = {
         "macro-ovr-auc",
         "macro-ovo-auc",
-        "macro-precision",
-        "macro-recall",
-        "macro-f1",
-        "weighted-precision",
-        "weighted-recall",
-        "weighted-f1",
+        "precision",
+        "recall",
+        "f1",
+        "support",
         "acc",
         "bacc",
         "weighted_kappa",
     }
+
     
     def compute_extra_metrics(self):
         """
@@ -50,26 +51,39 @@ class LoggingMixin:
 
     def init_loggers(self, save_dir):
         """
-        OPTIONAL. Initialize metrics loggers. This method can be overwritten in child classes to use different logger(s).
-
-        Sets:
-            self.logger (Any): Logger object
+        Initialize metrics loggers.
         """
         
-        return {
+        lr_policy = self.scheduler_config.get('step_on')
+        
+        training_loggers = {
             "loss": TrainingMetricsLogger(save_dir, "loss", step_on="epoch"),
-            "lr": TrainingMetricsLogger(
-                save_dir, "lr", step_on="optimizer-step"
-            ), 
-            self.target_score : TrainingMetricsLogger(
-                save_dir, self.target_score, step_on="epoch"
-            ),
-            "smooth_rank": TrainingMetricsLogger(
-                save_dir, "smooth_rank", step_on="epoch"
-            ),
+            "lr": TrainingMetricsLogger(save_dir, "lr", step_on="epoch" if lr_policy in LoggingMixin.SCORES else "optimizer-step"),
+            "smooth_rank": TrainingMetricsLogger(save_dir, "smooth_rank", step_on="epoch"),
         }
 
-    def log_lr(self, step):
+        if self.save_which_checkpoints.startswith("best") :
+            training_loggers[self.save_which_checkpoints] = TrainingMetricsLogger(save_dir,self.save_which_checkpoints.split("-")[-1],step_on="epoch")
+
+        scores_save_dir = Path(save_dir) / "scores"
+        os.makedirs(scores_save_dir, exist_ok=True)
+
+        # Loggers per tutti gli score, incluso eventualmente target_score
+        validation_loggers = {
+                score_name: ValidationMetricsLogger(scores_save_dir, score_name, step_on='epoch')
+                if score_name in ['precision', 'recall', 'f1', 'support']
+                else TrainingMetricsLogger(scores_save_dir, score_name, step_on='epoch')
+                for score_name in LoggingMixin.SCORES
+            }
+
+        # Unisci i logger generali e quelli degli score
+        self.training_loggers = training_loggers
+        self.validation_loggers = validation_loggers
+
+        self.loggers = {**training_loggers, **validation_loggers}
+        return self.loggers
+
+    def log_lr(self, step, score = None):
         """
         Log learning rate to dashboard. This method can be overwritten in child classes to log learning rate differently.
 
@@ -78,18 +92,19 @@ class LoggingMixin:
             self.mode (str): Mode of operation, either 'train', 'val', or 'test'.
             self.scheduler (torch.optim.lr_scheduler): Learning rate scheduler
         """
-        self.loggers["lr"].step({self.mode: self.scheduler.get_last_lr()[0]}, step)
+        self.training_loggers["lr"].step({self.mode: self.scheduler.get_last_lr()[0]}, step)
 
     def log_target_score(self,step,score):
-        """
-        Log target score to dashboard. This method can be overwritten in child classes to log learning rate differently.
+        self.validation_loggers[self.target_score].step({self.mode : score}, step)
 
-        You may find the following attributes useful:
-            self.current_epoch (int): Current epoch idx
-            self.mode (str): Mode of operation, either 'train', 'val', or 'test'.
-            self.scheduler (torch.optim.lr_scheduler): Learning rate scheduler
-        """
-        self.loggers[self.target_score].step({self.mode : score}, step)
+    def log_scores(self,step,scores):
+        for score_name in LoggingMixin.SCORES:
+            self.validation_loggers[score_name].step(
+                {self.mode : scores[score_name]},
+                step,
+                color_map=self.color_map,
+                label_dict=self.model_kwargs['label_dict']
+            )
 
     def log_loss(self, step):
         """
@@ -100,7 +115,7 @@ class LoggingMixin:
             self.current_epoch_metrics (dict): Dictionary of metrics for this epoch {'loss': loss, 'outputs': outputs, 'extra_metric_1': extra_metric_1, ...}
             self.mode (str): Mode of operation, either 'train', 'val', or '
         """
-        self.loggers['loss'].step({self.mode: self.current_epoch_metrics['avg_loss']}, step)
+        self.training_loggers['loss'].step({self.mode: self.current_epoch_metrics['avg_loss']}, step)
 
     def log_smooth_rank(self, step):
         """
@@ -112,7 +127,7 @@ class LoggingMixin:
             self.mode (str): Mode of operation, either 'train', 'val', or 'test'.
         """
         if "smooth_rank" in self.current_epoch_metrics:
-            self.loggers["smooth_rank"].step(
+            self.training_loggers["smooth_rank"].step(
                 {self.mode: self.current_epoch_metrics["smooth_rank"]}, step
             )
 
@@ -227,15 +242,6 @@ class LoggingMixin:
 
 
 class TrainingMetricsLogger:
-    """
-    Custom logging class for logging and visualizing training metrics.
-
-    Parameters
-    ----------
-    save_dir (str): The directory to save the dashboard images to.
-    name (str): The name of the dashboard. Will be saved as "name.png".
-    step_on (str): What each step represents. Usually "epoch" or "batch", but can be anything. Used for x-axis label.
-    """
 
     def __init__(self, save_dir, name, step_on):
         self.save_dir = save_dir
@@ -244,21 +250,8 @@ class TrainingMetricsLogger:
         self.data = {}
         self.current_step = {}  # Initialize step counter for each line
 
-    def step(self, metrics, step, save=True, show=False):
-        """
-        Logs the metrics data and saves an updated dashboard image. Previous dashboard images are overwritten.
+    def step(self, metrics, step, save=True, show=False, title=None, color_map=None, label_dict = None):
 
-        Parameters
-        ----------
-        metrics : dict
-            A dictionary where every key corresponds to a line in this plot labeled by the second key.
-        step : int
-            The step number.
-        save : bool, optional
-            Whether to save the dashboard on this step. The default is True.
-        show : bool, optional
-            Whether to show the dashboard on this step. The default is False.
-        """
         # Add new data
         for line_name, y in metrics.items():
             if y is not None:
@@ -271,13 +264,14 @@ class TrainingMetricsLogger:
 
         # Plot updated data
         for line_name, points in self.data.items():
-            points.sort(key=lambda x: x[0])  # sort by x
+            points.sort(key=lambda x: x[0])  # sort by x-axis (step)
             x, y = zip(*points)  # unzip into two lists
             ax.plot(x, y, label=line_name, marker="o")
             ax.legend()
-            ax.set_title(self.name)
+            ax.set_title(title if title is not None else self.name)  # Use custom title if provided
             ax.set_facecolor("white")  # set plot background to white
             ax.set_xlabel(self.step_on)
+            # Adjust xticks based on step
             if step < 10:
                 ax.set_xticks(range(step + 1))
             elif step < 50:
@@ -300,7 +294,7 @@ class TrainingMetricsLogger:
             os.makedirs(self.save_dir, exist_ok=True)
             plt.savefig(os.path.join(self.save_dir, f"{self.name}.png"))
 
-            # NEW: Save raw loss values. MV added
+            # Save raw metrics data to JSON
             with open(
                 os.path.join(self.save_dir, f"{self.name}.json"), "w", encoding="utf-8"
             ) as f:
@@ -314,3 +308,84 @@ class TrainingMetricsLogger:
         """
         with open(os.path.join(self.save_dir, filename), "r") as f:
             return json.load(f)
+
+class ValidationMetricsLogger:
+    def __init__(self, save_dir, name, step_on="epoch"):
+        self.save_dir = save_dir
+        self.name = name
+        self.step_on = step_on
+        self.data = {}
+
+    def step(
+        self,
+        metrics,
+        step,
+        show=False,
+        save=True,
+        title=None,
+        color_map=None,
+        label_dict=None,
+    ):
+        """
+        metrics: dict {mode: dict_of_scores}
+        dict_of_scores keys: macro, weighted, class-wise labels
+        """
+
+        # Ignore mode, extract actual scores dict
+        scores = next(iter(metrics.values()))
+
+        if not isinstance(scores, dict):
+            raise ValueError(
+                f"ValidationMetricsLogger expects dict scores, got {type(scores)}"
+            )
+
+        # Accumulate data
+        for key, value in scores.items():
+            if value is None:
+                continue
+            if key not in self.data:
+                self.data[key] = []
+            self.data[key].append((step, value))
+
+        # ---- PLOTTING ----
+        fig, ax = plt.subplots(figsize=(15, 5))
+
+        for line_name, points in self.data.items():
+            points.sort(key=lambda x: x[0])
+            x, y = zip(*points)
+
+            lname = line_name.lower()
+            
+            if lname == "macro":
+                ax.plot(x, y, color="black", linewidth=2, label=line_name, marker="o")
+            elif lname == "weighted":
+                ax.plot(x, y, color="black", linestyle="--", label=line_name, marker="o")
+            else:
+                if isinstance(color_map, dict):
+                    if line_name not in color_map:
+                        raise ValueError(f"No color defined for class '{line_name}'")
+                    c = color_map[line_name]
+                else:
+                    c = None  # fallback matplotlib
+
+                ax.plot(x, y, color=c, marker="o", label=line_name)
+
+
+        ax.set_xlabel(self.step_on)
+        ax.set_title(title if title else self.name)
+        ax.legend()
+        ax.set_facecolor("white")
+        plt.tight_layout()
+
+        if save:
+            os.makedirs(self.save_dir, exist_ok=True)
+            plt.savefig(os.path.join(self.save_dir, f"{self.name}.png"))
+            with open(
+                os.path.join(self.save_dir, f"{self.name}.json"), "w"
+            ) as f:
+                json.dump(self.data, f, indent=4)
+
+        if show:
+            plt.show()
+
+        plt.close()
