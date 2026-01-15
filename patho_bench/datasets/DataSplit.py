@@ -24,7 +24,7 @@ class DataSplit(ConfigMixin):
                  label_cols: list,
                  skip_labels: dict = None,
                  ignore_ids: list = None,
-                 verbose: bool = True):
+                 verbose: bool = False):
         '''
         Initializes the Split object by loading the dataset and setting up attributes.
 

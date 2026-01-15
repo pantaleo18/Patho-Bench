@@ -12,7 +12,20 @@ Contains visualization methods for classification tasks
 """
 
 class ClassificationMixin:
-    
+    SCALAR_SCORES = [
+        "macro-ovr-auc",
+        "macro-ovo-auc",
+        "macro-precision",
+        "macro-recall",
+        "macro-f1",
+        "weighted-precision",
+        "weighted-recall",
+        "weighted-f1",
+        "acc",
+        "bacc",
+        "weighted_kappa"
+    ]
+
     def auc_roc(self, y_true, preds, num_classes, saveto=None, label_dict=None, color_map=None):
         y_true_bin = self.binarize_labels(y_true, num_classes)
 
@@ -166,10 +179,17 @@ class ClassificationMixin:
             f1_dict[class_name] = report[str(class_idx)]["f1-score"]
             support_dict[class_name] = report[str(class_idx)]["support"]
 
-        # Update overall scores
+        # Update overall scores.
+        # MP included class-wise metrics for graphics. Name 'overall' unchanched for the sake of compatibility
         scores["overall"] = {
             "macro-ovr-auc": macro_ovr_auc,
             "macro-ovo-auc": macro_ovo_auc,
+            "macro-precision": report["macro avg"]["precision"],
+            "macro-recall": report["macro avg"]["recall"],
+            "macro-f1": report["macro avg"]["f1-score"],
+            "weighted-precision": report["weighted avg"]["precision"],
+            "weighted-recall": report["weighted avg"]["recall"],
+            "weighted-f1": report["weighted avg"]["f1-score"],
             "precision": precision_dict,
             "recall": recall_dict,
             "f1": f1_dict,

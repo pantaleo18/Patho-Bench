@@ -54,16 +54,15 @@ class LoggingMixin:
         Initialize metrics loggers.
         """
         
-        lr_policy = self.scheduler_config.get('step_on')
-        
         training_loggers = {
             "loss": TrainingMetricsLogger(save_dir, "loss", step_on="epoch"),
-            "lr": TrainingMetricsLogger(save_dir, "lr", step_on="epoch" if lr_policy in LoggingMixin.SCORES else "optimizer-step"),
+            "lr": TrainingMetricsLogger(save_dir, "lr", step_on="update"),
             "smooth_rank": TrainingMetricsLogger(save_dir, "smooth_rank", step_on="epoch"),
         }
 
-        if self.save_which_checkpoints.startswith("best") :
-            training_loggers[self.save_which_checkpoints] = TrainingMetricsLogger(save_dir,self.save_which_checkpoints.split("-")[-1],step_on="epoch")
+        if self.target_score :
+            training_loggers[self.target_score] = \
+                TrainingMetricsLogger(save_dir,self.target_score, step_on="epoch")
 
         scores_save_dir = Path(save_dir) / "scores"
         os.makedirs(scores_save_dir, exist_ok=True)
@@ -83,7 +82,7 @@ class LoggingMixin:
         self.loggers = {**training_loggers, **validation_loggers}
         return self.loggers
 
-    def log_lr(self, step, score = None):
+    def log_lr(self, step):
         """
         Log learning rate to dashboard. This method can be overwritten in child classes to log learning rate differently.
 
@@ -92,10 +91,15 @@ class LoggingMixin:
             self.mode (str): Mode of operation, either 'train', 'val', or 'test'.
             self.scheduler (torch.optim.lr_scheduler): Learning rate scheduler
         """
-        self.training_loggers["lr"].step({self.mode: self.scheduler.get_last_lr()[0]}, step)
+        self.training_loggers["lr"].step({
+            self.mode: self.scheduler.get_last_lr()[0]}, 
+            step,
+            title=f"Learning Rate. Step On = {self.scheduler_config['step_on']}",
+            steps_per_epoch=self.num_batches_train,
+        )
 
     def log_target_score(self,step,score):
-        self.validation_loggers[self.target_score].step({self.mode : score}, step)
+        self.training_loggers[self.target_score].step({self.mode : score}, step)
 
     def log_scores(self,step,scores):
         for score_name in LoggingMixin.SCORES:
@@ -250,54 +254,55 @@ class TrainingMetricsLogger:
         self.data = {}
         self.current_step = {}  # Initialize step counter for each line
 
-    def step(self, metrics, step, save=True, show=False, title=None, color_map=None, label_dict = None):
-
-        # Add new data
+    def step(self, metrics, step, save=True, show=False, title=None, color_map=None, label_dict=None, steps_per_epoch=None):
+        
         for line_name, y in metrics.items():
             if y is not None:
                 if line_name not in self.data:
                     self.data[line_name] = []
                 self.data[line_name].append((step, y))
 
-        # Create subplots based on the number of metrics
+        # Crea subplot
         fig, ax = plt.subplots(figsize=(15, 5))
 
-        # Plot updated data
+        # Traccia i dati
         for line_name, points in self.data.items():
-            points.sort(key=lambda x: x[0])  # sort by x-axis (step)
-            x, y = zip(*points)  # unzip into two lists
+            points.sort(key=lambda x: x[0])
+            x, y = zip(*points)
             ax.plot(x, y, label=line_name, marker="o")
-            ax.legend()
-            ax.set_title(title if title is not None else self.name)  # Use custom title if provided
-            ax.set_facecolor("white")  # set plot background to white
-            ax.set_xlabel(self.step_on)
-            # Adjust xticks based on step
-            if step < 10:
-                ax.set_xticks(range(step + 1))
-            elif step < 50:
-                ax.set_xticks(list(range(0, step + 1, 5)) + [step])
-            elif step < 100:
-                ax.set_xticks(list(range(0, step + 1, 10)) + [step])
-            elif step < 500:
-                ax.set_xticks(list(range(0, step + 1, 50)) + [step])
-            else:
-                ax.set_xticks(list(range(0, step + 1, 100)) + [step])
 
-        # Set figure background and layout
+        ax.legend(loc="upper right", bbox_to_anchor=(1, 1), frameon=True)
+        ax.set_title(title if title else self.name)
+        ax.set_facecolor("white")
+        ax.set_xlabel(self.step_on)
+
+        if steps_per_epoch:
+            for epoch_end in range(steps_per_epoch, step + 1, steps_per_epoch):
+                ax.axvline(x=epoch_end, color="gray", linestyle="--", alpha=0.5)
+
+        # Gestione xticks
+        if step < 10:
+            ax.set_xticks(range(step + 1))
+        elif step < 50:
+            ax.set_xticks(list(range(0, step + 1, 5)) + [step])
+        elif step < 100:
+            ax.set_xticks(list(range(0, step + 1, 10)) + [step])
+        elif step < 500:
+            ax.set_xticks(list(range(0, step + 1, 50)) + [step])
+        else:
+            ax.set_xticks(list(range(0, step + 1, 100)) + [step])
+
+        # Imposta sfondo e layout
         fig.set_facecolor("white")
         plt.tight_layout()
 
-        # Display and save logic
+        # Display e salvataggio
         if show:
             plt.show()
         if save:
             os.makedirs(self.save_dir, exist_ok=True)
             plt.savefig(os.path.join(self.save_dir, f"{self.name}.png"))
-
-            # Save raw metrics data to JSON
-            with open(
-                os.path.join(self.save_dir, f"{self.name}.json"), "w", encoding="utf-8"
-            ) as f:
+            with open(os.path.join(self.save_dir, f"{self.name}.json"), "w", encoding="utf-8") as f:
                 json.dump(self.data, f, cls=JSONsaver, indent=4)
 
         plt.close()
@@ -373,7 +378,7 @@ class ValidationMetricsLogger:
 
         ax.set_xlabel(self.step_on)
         ax.set_title(title if title else self.name)
-        ax.legend()
+        ax.legend(loc="upper right", bbox_to_anchor=(1, 1), frameon=True)
         ax.set_facecolor("white")
         plt.tight_layout()
 

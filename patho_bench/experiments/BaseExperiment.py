@@ -1,3 +1,4 @@
+import warnings
 import os
 import torch
 import json
@@ -102,14 +103,18 @@ class BaseExperiment(ConfigMixin):
 
         return summary
 
-    
     def set_seed(self, seed = 0, disable_cudnn = False):
         '''
         Sets global seeds for reproducibility.
         Seeds the RNG for all devices (both CPU and CUDA).
         '''
+        
         import random
         from numpy.random import MT19937, RandomState, SeedSequence
+        
+        if seed is None:
+            warnings.warn("Seed is none, preventing FineTuningExperiment from setting a global seed.")
+            return
         
         os.environ['PYTHONHASHSEED'] = str(seed)
         np.random.seed(seed)
