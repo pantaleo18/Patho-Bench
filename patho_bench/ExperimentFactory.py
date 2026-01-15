@@ -46,17 +46,15 @@ class ExperimentFactory:
                  bag_size,
                  base_learning_rate,
                  gradient_accumulation,
-                 weight_decay,
                  num_epochs,
-                 scheduler_type: str,
-                 optimizer_type: str,
                  balanced: bool,
                  save_which_checkpoints: str,
                  model_kwargs: dict = {},
                  precision : str = None,
-                 layer_decay = None,
-                 gpu = -1,
-                 batch_size = 1, 
+                 gpu : int = -1,
+                 device_batch_size : int = 1, 
+                 seed : int = None,
+                 disable_cudnn : bool = False,
                  scheduler_config : dict = None,
                  optimizer_config : dict = None,
                  external_split: str = None,
@@ -68,9 +66,19 @@ class ExperimentFactory:
                  early_stop : bool = False,
                  early_stop_policy : str = "best-val-loss",
                  patience : int = 3,
-                 halt_training_on_folder_early_stop : bool = False
+                 halt_training_on_folder_early_stop : bool = False,
+                 **kwargs,
         ):
-        
+
+        if kwargs.get('batch_size'):
+            warnings.warn(
+                "The 'batch_size' argument is deprecated and has been renamed to 'device_batch_size'. "
+                "It controls the physical batch size, i.e., the number of WSIs processed in parallel. "
+                "The total effective batch size is calculated as device_batch_size * accumulation_steps. "
+                "For backward compatibility, self.device_batch_size is set to the provided 'batch_size' value."
+            )
+            device_batch_size = kwargs['batch_size']
+
         ###### Get dataset ################################################################
         split, task_info, internal_dataset = ExperimentFactory._prepare_internal_dataset(
             split_path=split,
@@ -83,37 +91,29 @@ class ExperimentFactory:
             bag_size=bag_size
         )
 
-        ###### Get loss ################################################################
-        if task_info['task_type'] == 'survival':
-            loss = NLLSurvLoss(alpha=0.0, eps=1e-7, reduction='mean')
-        elif balanced:
-            # Balanced loss is a dict of losses for each fold
-            fold_weights = {fold: compute_class_weight('balanced', classes = np.array(sorted(split.unique_classes(task_info['task_col']))), y = split.y(task_info['task_col'], fold, 'train')) for fold in range(split.num_folds)}
-            loss = {fold: nn.CrossEntropyLoss(weight = torch.from_numpy(weights).float()) for fold, weights in fold_weights.items()}
-        else:
-            loss = nn.CrossEntropyLoss()
+        loss = configure_loss(
+            task_type = task_info['task_type'], 
+            balanced = balanced,
+            split = split,
+            task_name = task_info['task_col']
+        )
         
-        ###### Configure model ################################################################
-        model_constructor, classifier_args = ExperimentFactory.configure_model(
+        model_constructor, classifier_args = configure_model(
             model_name,
             model_kwargs,
             loss,
             task_info
         )
-
-        if scheduler_config is None:
-            scheduler_config = get_scheduler_basic_config(scheduler_type)
-
-        if optimizer_config is None:
-            optimizer_config = get_optimizer_config(
-                optimizer_type,
-                base_learning_rate=base_learning_rate,
-                batch_size=batch_size,
-                gradient_accumulation=gradient_accumulation,
-                layer_decay=layer_decay,
-                weight_decay=weight_decay
-            )
-
+        
+        optimizer_config = configure_optimizer(
+            optimizer_config,
+            base_learning_rate=base_learning_rate,
+            batch_size=device_batch_size,
+            gradient_accumulation=gradient_accumulation
+        )
+        
+        scheduler_config = configure_scheduler(scheduler_config)
+        
         if isinstance(color_map,str):
             with open(color_map,"r") as fp:
                 color_map = json.load(fp)
@@ -122,7 +122,7 @@ class ExperimentFactory:
         experiment = FinetuningExperiment(
             task_type = task_info['task_type'],
             dataset = internal_dataset,
-            batch_size = batch_size,
+            device_batch_size = device_batch_size,
             model_constructor = model_constructor,
             classifier_args = classifier_args,
             num_epochs = num_epochs,
@@ -140,7 +140,9 @@ class ExperimentFactory:
             early_stop = early_stop,
             early_stop_policy=early_stop_policy,
             patience = patience,
-            halt_training_on_folder_early_stop=halt_training_on_folder_early_stop
+            halt_training_on_folder_early_stop=halt_training_on_folder_early_stop,
+            seed=seed,
+            disable_cudnn=disable_cudnn
         )
         
         if external_split is None:
@@ -177,28 +179,12 @@ class ExperimentFactory:
               early_stop_policy : str = "best-val-loss",
               patience : int = 3,
               halt_training_on_folder_early_stop : bool = False,
-              lr_logging_interval : int = 1
+              seed : bool = None,
+              disable_cudnn : bool = False,
             ):
-        '''
-        Run a hyperparameter sweep for a given experiment configuration.
-
-        Args:
-            experiment_type (str): Type of experiment to run. Must be one of "finetune", "linprobe", "retrieval", or "coxnet".
-            split: str, path to local split file.
-            task_config: str, path to task config file.
-            saveto: str, path to save the results
-            combine_slides_per_patient: bool, Whether to combine patches from multiple slides when pooling at case_id level. If False, will pool each slide independently.
-            sweep_over (dict[list]): Dictionary of hyperparameters to sweep over.
-            gpu: int, GPU id. If -1, the best available GPU is used.
-            pooled_embeddings_dir: str, path to folder containing pre-pooled embeddings (slide-level or patient-level). If empty, must provide patch_embeddings_dirs.
-            patch_embeddings_dirs: list of str, paths to folder(s) containing patch embeddings for given experiment. Only needed if pooled_embeddings_dir is empty.
-            model_name: str, name of the model to use for pooling. Only needed if pooled_embeddings_dir is empty.
-            model_kwargs: dict, additional arguments to pass to the model constructor.
-            external_split: str, path to local split file for external testing.
-            external_pooled_embeddings_dir: str, path to folder containing pooled embeddings for external testing. Only needed if external_split is not None.
-            external_saveto: str, path to save the results of external testing. Only needed if external_split is not None.
-            num_bootstraps: int, number of bootstraps. Default is 100.
-        '''
+        
+        num_configs = _sweep_welcome(sweep_over)
+        
         # Build the base arguments to pass to the experiment factory.
         args = {
             'combine_slides_per_patient': combine_slides_per_patient,
@@ -209,17 +195,20 @@ class ExperimentFactory:
             'external_saveto': external_saveto,
             'num_bootstraps': num_bootstraps,
             'color_map' : color_map,
-            'lr_logging_interval' : lr_logging_interval,
             'early_stop' : early_stop,
             'patience' : patience,
             'early_stop_policy' : early_stop_policy,
             'halt_training_on_folder_early_stop' : halt_training_on_folder_early_stop,
+            'seed' : seed,
+            "disable_cudnn" : disable_cudnn
         }
 
         experiments_list = []
         # Iterate over all combinations of hyperparameters.
         for i, hyperparams in enumerate(generate_arg_combinations(sweep_over)):
-            
+
+            _sweep_section(f"STARTING CONFIGURATION {i + 1} / {num_configs}", 140)
+
             # Create a unique experiment directory from the hyperparameters.
             args['saveto'] = setup_folder_configs(
                 saveto_root=saveto_root,
@@ -343,47 +332,46 @@ class ExperimentFactory:
         else :
             return DefaultTrainableSlideEncoder
 
-    @staticmethod     
-    def configure_model(model_name : str, model_kwargs : dict, loss, task_info : dict):
-        
-        model_constructor = ExperimentFactory._get_model_constructor(model_name)
-        model_name_cleaned = model_name.replace("millab:", "")
-        num_classes = len(task_info['label_dict'])
-
-        if model_constructor is FeatherTrainableSlideClassifier:
-            slide_classifier = create_model(model_name_cleaned, from_pretrained=True, num_classes=num_classes)
-
-            classifier_args = {
-                'slide_classifier': slide_classifier,
-                'post_pooling_dim': slide_classifier.model.classifier.in_features,
-                'task_name': task_info['task_col'],
-                'num_classes': num_classes,
-                'loss': loss,
-                'label_dict' : task_info['label_dict'],
-                **model_kwargs
-            }
-        
-        else : 
-            slide_encoder = encoder_factory(
-                model_name_cleaned, 
-                pretrained = False, 
-                freeze=False, 
-                **model_kwargs
-            )
-
-            classifier_args = {
-                'slide_encoder': slide_encoder,
-                'post_pooling_dim': slide_encoder.embedding_dim,
-                'task_name': task_info['task_col'],
-                'num_classes': num_classes,
-                'loss': loss,
-                'label_dict' : task_info['label_dict'],
-            }
-
-        return model_constructor, classifier_args
-
 ############################################################################################################
 # Some helper functions
+
+def configure_model(model_name : str, model_kwargs : dict, loss, task_info : dict):
+    
+    model_constructor = ExperimentFactory._get_model_constructor(model_name)
+    model_name_cleaned = model_name.replace("millab:", "")
+    num_classes = len(task_info['label_dict'])
+
+    if model_constructor is FeatherTrainableSlideClassifier:
+        slide_classifier = create_model(model_name_cleaned, from_pretrained=True, num_classes=num_classes)
+
+        classifier_args = {
+            'slide_classifier': slide_classifier,
+            'post_pooling_dim': slide_classifier.model.classifier.in_features,
+            'task_name': task_info['task_col'],
+            'num_classes': num_classes,
+            'loss': loss,
+            'label_dict' : task_info['label_dict'],
+            **model_kwargs
+        }
+    
+    else : 
+        slide_encoder = encoder_factory(
+            model_name_cleaned, 
+            pretrained = False, 
+            freeze=False, 
+            **model_kwargs
+        )
+
+        classifier_args = {
+            'slide_encoder': slide_encoder,
+            'post_pooling_dim': slide_encoder.embedding_dim,
+            'task_name': task_info['task_col'],
+            'num_classes': num_classes,
+            'loss': loss,
+            'label_dict' : task_info['label_dict'],
+        }
+
+    return model_constructor, classifier_args
         
 def parse_task_code(task_code):
     '''
@@ -442,79 +430,102 @@ def make_list(x):
     '''
     return x if isinstance(x, list) else [x]
 
-def get_scheduler_basic_config(scheduler_type : str):
-        ###### Configure scheduler ################################################################
-        if scheduler_type == 'gigapath':
-            from patho_bench.optim.GigaPathOptim import CustomLRScheduler
-            scheduler_config = {
-                'type': CustomLRScheduler,
-                'warmup_epochs': 1,
-                'min_lr': 0.000001,
-                'step_on': 'accumulation-step'
-            }
-        elif scheduler_type == 'cosine':
-            scheduler_config = {
-                'type': 'cosine',
-                'eta_min': 1e-8,
-                'step_on': 'accumulation-step'
-            } 
-        elif scheduler_type == 'step':
-            scheduler_config = {
-                'type': 'step',
-                'gamma': 0.1,
-                'milestones' : [2,5,15,27],
-                'step_on': 'epoch',
-            }
-        elif scheduler_type == "plateau":
-            scheduler_config = {
-                'type' : 'plateau',
-                'mode' : 'max',
-                'factor' : 1e-1,
-                'patience' : 0,
-                'threshold' : 1e-4,
-                'step_on' : 'val',
-            }
-        else:
-            raise NotImplementedError(
-                f'Scheduler type {scheduler_type} not yet implemented. '
-                'Please choose from "cosine", "step", or "gigapath".'
-            )
-        return scheduler_config
+def configure_loss(
+        task_type : str, 
+        balanced : bool,
+        split,
+        task_name : str,
+):
+    if task_type == 'survival':
+        loss = NLLSurvLoss(alpha=0.0, eps=1e-7, reduction='mean')
+    elif balanced:
+        # Balanced loss is a dict of losses for each fold
+        fold_weights = {fold: compute_class_weight('balanced', classes = np.array(sorted(split.unique_classes(task_name))), y = split.y(task_name, fold, 'train')) for fold in range(split.num_folds)}
+        loss = {fold: nn.CrossEntropyLoss(weight = torch.from_numpy(weights).float()) for fold, weights in fold_weights.items()}
+    else:
+        loss = nn.CrossEntropyLoss()
 
-def get_optimizer_config(
-        optimizer_type : str,
-        base_learning_rate : float,
-        batch_size : int, 
-        gradient_accumulation: int,
-        layer_decay : float,
-        weight_decay : float
-    ):
+    return loss
+
+def configure_scheduler(custom_config: dict = None):
+    json_path = os.path.join(
+        os.path.dirname(__file__),
+        "config",
+        "scheduler.json"
+    )
+    
+    with open(json_path, "r") as f:
+        default_configs = json.load(f)
+    
+    scheduler_type = custom_config.get("type", "cosine") if custom_config else "cosine"
+
+    if scheduler_type not in default_configs:
+        raise NotImplementedError(
+            f"Scheduler type '{scheduler_type}' not implemented"
+        )
+    
+    scheduler_config = default_configs[scheduler_type].copy()
+
+    if custom_config:
+        scheduler_config.update(custom_config)
+    else:
+        warnings.warn(
+            f"No custom configuration set for scheduler. Using default configuration: {scheduler_config}",
+            RuntimeWarning
+        )
+    
+    return scheduler_config
+
+def configure_optimizer(
+    custom_config: dict = None,
+    base_learning_rate: float = None,
+    batch_size: int = None,
+    gradient_accumulation: int = None
+):
+    json_path = os.path.join(
+        os.path.dirname(__file__),
+        "config",
+        "optimizer.json"
+    )
+
+    with open(json_path, "r") as f:
+        default_configs = json.load(f)
+
+    optimizer_type = custom_config.get("type", "AdamW") if custom_config else "AdamW"
+
+    if optimizer_type not in default_configs:
+        raise NotImplementedError(
+            f"Optimizer type '{optimizer_type}' not implemented"
+        )
+
+    # Config strutturale (JSON + override)
+    optimizer_config = default_configs[optimizer_type].copy()
+
+    # Adding learning rate
+    if base_learning_rate is not None:
+        optimizer_config["base_lr"] = base_learning_rate
+
+    if custom_config:
+        optimizer_config.update(custom_config)
+    else:
+        warnings.warn(
+            f"No custom configuration set for optimizer. Using default configuration: {optimizer_config}",
+            RuntimeWarning
+        )
+
+    # Special case for Patho-Bench custom optimizer
     if optimizer_type == 'gigapath':
         from patho_bench.optim.GigaPathOptim import param_groups_lrd
-        optimizer_config = {'type': 'AdamW',
-                            'base_lr': base_learning_rate * ((batch_size * gradient_accumulation) / 256),
-                            'get_param_groups': param_groups_lrd,
-                            'param_group_args': {'layer_decay': layer_decay,
-                                                    'no_weight_decay_list': [],
-                                                    'weight_decay': weight_decay},
-                            }
-    elif optimizer_type == 'AdamW':
         optimizer_config = {
             'type': 'AdamW',
-            'base_lr': base_learning_rate,
-            'weight_decay': weight_decay
+            'base_lr': base_learning_rate * ((batch_size * gradient_accumulation) / 256),
+            'get_param_groups': param_groups_lrd,
+            'param_group_args': {
+                'layer_decay': custom_config.get('layer_decay',0),
+                'no_weight_decay_list': [],
+                'weight_decay': custom_config.get('weight_decay',0)
+            },
         }
-    elif optimizer_type == 'Adam':
-        optimizer_config = {
-            'type': 'Adam',
-            'base_lr': base_learning_rate,
-            'weight_decay': weight_decay
-        }
-    else:
-        raise NotImplementedError(
-            f'Optimizer type {optimizer_type} not yet implemented. '
-            'Please choose from "Adam", "AdamW", or "gigapath".'
-        )
 
     return optimizer_config
 
@@ -582,6 +593,46 @@ def setup_folder_configs(saveto_root,id,hyperparams):
         json.dump(hyperparams, f, indent=4)
     
     return this_config_path
+
+def _sweep_section(title: str, width: int = 140):
+    print("\n" + "-" * width)
+    print(f"{title:^{width}}")
+    print("-" * width)
+
+def _sweep_welcome(sweep_over: dict, width: int = 140):
+
+    # Header principale
+    print("\n" + "=" * width)
+    print(f"{'WELCOME TO SWEEP MODE':^{width}}")
+    print("=" * width)
+
+    # Descrizione
+    description = (
+        "Welcome to ComPaSIO's sweep mode.\n"
+        "A grid search will be performed over the specified hyperparameters."
+    )
+    for line in description.split("\n"):
+        print(f"{line:^{width}}")
+
+    print("=" * width)
+
+    # Sweep info
+    sweep_keys = list(sweep_over.keys())
+    num_configs = len(list(generate_arg_combinations(sweep_over)))
+
+    print("\n" + "-" * width)
+    print(f"{'SWEEP CONFIGURATION':^{width}}")
+    print("-" * width)
+
+    print("Sweep parameters:")
+    for k in sweep_keys:
+        print(f"  - {k}")
+
+    print(f"\nTotal configurations to run: {num_configs}")
+
+    print("\n" + "=" * width + "\n")
+
+    return num_configs
 
 def get_precision_type(precision : str):
     if "bfloat16" == precision : 

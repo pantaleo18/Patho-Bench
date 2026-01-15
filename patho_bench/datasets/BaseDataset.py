@@ -36,8 +36,6 @@ class BaseDataset(torch.utils.data.Dataset, ConfigMixin):
         }
         subset.ids = list(subset.data.keys())
         
-        print(f"[DEBUG] Fold='{fold}' | Iteration={iteration} | Num samples={len(subset.ids)}")
-        
         if hasattr(subset, 'child_datasets'):
             for dataset_name, dataset in subset.child_datasets.items():
                 assert not hasattr(dataset, 'child_datasets'), f'BaseDataset.get_subset() does not support multiple levels of child datasets. Dataset name: {dataset_name}'

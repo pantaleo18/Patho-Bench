@@ -1,0 +1,15 @@
+{
+    "AdamW": {
+        "type": "AdamW",
+        "weight_decay": 0.0
+    },
+    "Adam": {
+        "type": "Adam",
+        "weight_decay": 0.0
+    },
+    "gigapath": {
+        "type": "gigapath",
+        "weight_decay": 0.0,
+        "layer_decay": 1.0
+    }
+}

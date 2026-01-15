@@ -2,7 +2,7 @@ import os
 import numpy as np
 import torch
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta
 from tqdm import tqdm
 import json
 import warnings
@@ -21,6 +21,8 @@ from patho_bench.experiments.utils.SurvivalMixin import SurvivalMixin
 
 import math 
 import warnings
+import textwrap
+
 
 
 # Turn off tokenizer parallelism to avoid warnings from dataloader
@@ -31,10 +33,17 @@ This file contains the FinetuningExperiment class, which is used to train and te
 """
 
 class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, BaseExperiment):
+
+    EPOCH_W = 7
+    PHASE_W = 12
+    DURATION_W = 21
+    WIDTH_EXP = 120
+    WIDTH_FOLD = 100
+
     def __init__(self,
                  task_type: str,
                  dataset: BaseDataset,
-                 batch_size: int,
+                 device_batch_size: int,
                  model_constructor: callable,
                  classifier_args: dict,
                  num_epochs: int,
@@ -47,8 +56,8 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                  device: str,
                  results_dir: str,
                  view_progress: str = 'bar',
-                 lr_logging_interval: int = None,
-                 seed: int = 7,
+                 seed: int = None,
+                 disable_cudnn : bool = False,
                  color_map : dict = None,
                  early_stop : bool = False,
                  early_stop_policy : str = "best-val-err",
@@ -74,7 +83,6 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             device (str): Device to use for training.
             results_dir (str): Where to save results.
             view_progress (str, optional): How to log progress. Can be 'bar' or 'verbose'. Defaults to 'bar'.
-            lr_logging_interval (int, optional): Interval at which to log learning rate to dashboard (in number of accumulation steps). Defaults to None (do not log).
             seed (int): Seed for reproducibility.
             early_stop : bool, halt the training when validation performance stop improving (defualt = True). Use `patience` to regulate it.
             patience : int, define how many epochs to wait for improvement before stopping (default = 3).
@@ -82,11 +90,12 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
         """
         self.task_type = task_type
         self.dataset = dataset
-        self.batch_size = batch_size
+        self.device_batch_size = device_batch_size
+        self.accumulation_steps = accumulation_steps
+        self._batch_size = self.device_batch_size * self.accumulation_steps
         self.model_constructor = model_constructor
         self.classifier_args = classifier_args
         self.num_epochs = num_epochs
-        self.accumulation_steps = accumulation_steps
         self.optimizer_config = optimizer_config
         self.scheduler_config = scheduler_config
         self.save_which_checkpoints = save_which_checkpoints
@@ -95,14 +104,15 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
         self.device = device
         self.results_dir = results_dir
         self.view_progress = view_progress
-        self.lr_logging_interval = lr_logging_interval
         self.seed = seed
-        self.set_seed(self.seed)
+        self.disable_cudnn = disable_cudnn
+        self.set_seed(self.seed,self.disable_cudnn)
         self.color_map = color_map
         self.early_stop = early_stop
         self.early_stop_policy = early_stop_policy
         self.patience = patience
         self.halt_training_on_folder_early_stop = halt_training_on_folder_early_stop
+        self.target_score = None
         
         # Set kwargs as extra attributes for saving in config.json
         for key, value in kwargs.items():
@@ -112,26 +122,30 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
         if self.save_which_checkpoints == 'best-val-loss':
             assert self.dataset.get_subset(iteration = 0, fold = 'val') is not None, "Split must contain validation samples if save_which_checkpoints is 'best-val-loss'."
 
+        # Monitor save-target-score if needed
+        if self.save_which_checkpoints.startswith("best-"):
+            _save_policy = self.save_which_checkpoints[len("best-"):]
+            if _save_policy not in ["val","loss","train","val-loss"]:
+                self.target_score = self.save_which_checkpoints[len("best-"):]
+
     def train(self):
         '''
         Runs training (and optionally validation) epochs for all folds of the experiment.
         '''
-        print(f'\nExperiment dir: {self.results_dir}')
-        self.save_config(os.path.join(self.results_dir, 'config.json'))
+        self.save_config(os.path.join(self.results_dir, 'pathobench_config.json'))
         self.train_results_dir = self.results_dir 
-        self.durations = []
+        self.durations = {}
+        
+        self.experiment_report()
         
         ### Loop through folds
-        for self.current_iter in range(self.dataset.num_folds):
-            
-            # FOR THE CURRENT FOLD
-            print("############################################################################################################")
-            print(f"Training: Fold {self.current_iter + 1} of {self.dataset.num_folds}...")
+        for self.current_fold in range(self.dataset.num_folds):
+
             self.mode = "train"
-            self.loggers = self.init_loggers(save_dir = os.path.join(self.results_dir, 'training_metrics', f'fold_{self.current_iter}'))
+            self.loggers = self.init_loggers(save_dir = os.path.join(self.results_dir, 'training_metrics', f'fold_{self.current_fold}'))
 
             ### Initialize train and val dataloaders
-            self.dataloaders = {mode: self.dataset.get_dataloader(self.current_iter, mode, batch_size=self.batch_size) for mode in ['train', 'val']}
+            self.dataloaders = {mode: self.dataset.get_dataloader(self.current_fold, mode, batch_size=self.device_batch_size) for mode in ['train', 'val']}
             
             ### Initialize model
             self.model = self.model_constructor(**self.classifier_args, device = self.device)
@@ -141,9 +155,8 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             self.optimizer = self._init_optimizer()
             self.scheduler = self._init_scheduler()
 
-            self.global_opt_step = 0  
-            if self.lr_logging_interval is not None: 
-                self.log_lr(0)
+            self.global_opt_steps = 0  # Total number of optimization steps
+            self.ga_scaling_factors = set()
 
             ### Prepare grad scaler
             # Only use GradScaler for FP16 training. bfloat16 does not require GradScaler: https://discuss.pytorch.org/t/bfloat16-training-explicit-cast-vs-autocast/202618/8
@@ -153,10 +166,10 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                 # Legacy (torch 2.0.0) implementation for compatibility with Gigapath
                 self.grad_scaler = torch.cuda.amp.GradScaler(enabled = (self.precision == torch.float16))
 
-            ### Initialize best loss and rank
-            self.best_val_loss = float('inf')    # Initialize to large number
-            self.best_macro_ovr_auc = -1 # Initialize to large number
-            self.best_smooth_rank = 0            # Initialize to 0
+            ### Initialize metrics
+            self.best_val_loss = float('inf')
+            self.best_target_score = float('-inf') 
+            self.best_smooth_rank = 0
 
             ### Prepare epoch loop
             if self.view_progress == 'bar':
@@ -164,17 +177,32 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             elif self.view_progress == 'verbose':
                 self.loop = range(self.num_epochs)
             else:
-                raise ValueError(f"view_progress must be 'bar' or 'verbose', got {self.view_progress} instead.")
-            
+                # Warning e fallback
+                warnings.warn(f"view_progress must be 'bar' or 'verbose', got '{self.view_progress}'. Falling back to no progress display.")
+                self.view_progress = None
+                self.loop = range(self.num_epochs)
+
             impatient_counter = 0
             prev_gen_error = float('inf') 
             early_stop_trigger = False
+            self.fold_training_epochs = 0 
+
+            self.durations[self.current_fold] = []
+
+            self.training_report(validation_scores = None)
+
+            # TRAINING LOOP
+            if self.view_progress == "verbose":
+                self._print_training_header()
             
             for self.current_epoch in self.loop:
+        
+                self.fold_training_epochs += 1 
 
                 # epoch = 0,1,...,num_epochs
                 epoch_loss = {'train' : None, 'val' : None }
                 new_best_loss = {'train' : None, 'val' : None}
+                new_best_target = {'train' : None, 'val' : None}
                 total_duration = {'train': 0, 'val': 0 }
 
                 for self.mode in ['train', 'val']:
@@ -187,79 +215,81 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
 
                         # Epoch core
                         start = time.time()
-                        new_best_loss[self.mode], epoch_loss[self.mode] = \
+                        new_best_loss[self.mode], epoch_loss[self.mode], new_best_target[self.mode], _ = \
                             self._run_single_epoch()
                         end = time.time()
-                        # --- dopo il run_single_epoch() ---
+    
                         duration = end - start
-                        duration_str = str(timedelta(seconds=int(duration)))
+                        if self.view_progress == "verbose": 
+                            self._print_training_row(
+                                epoch=self.current_epoch + 1,
+                                phase=self.mode,
+                                duration_seconds=duration
+                            )
 
-                        if self.view_progress == 'verbose':
-                            print(
-                                f"Finished epoch = {self.current_epoch} "
-                                f"in {duration_str} ({self.mode})"
-                            )    
+                        self._lr_step(
+                            update = self.scheduler_config['step_on'] == 'epoch' and self.mode == "val",
+                            metric = None
+                        )
+                        
                     # Store duration
                     total_duration[self.mode] += duration
                 
-                # Salva info per l'epoch corrente e il mode
-                self.durations.append({
-                    self.current_iter : {
-                        self.current_epoch :{
-                        "start": start,
-                        "stop": end,
-                        "duration_train": total_duration['train'],
-                        "duration_val": total_duration['val'],
-                        }
-                    }
+                # Save duration
+                self.durations[self.current_fold].append({
+                        "train": total_duration['train'],
+                        "val": total_duration['val'],
                 })
 
                 current_gen_err = epoch_loss['val'] - epoch_loss['train']
+                
+                if self.early_stop :
 
-                if self.early_stop and not new_best_loss['val']:
-                    # Update or reset the counter
-                    if self.early_stop_policy == "best-val-loss":
-                        impatient_counter  += 1 
-
-                    # The generalizzation-error early stop 
-                    # monitors the generalization error
-                    # and stops the training if it gets worse
-                    # WITHOUT finding new best loss
+                    if self.early_stop_policy ==  "best-checkpoint":
+                        impatient_counter = impatient_counter + 1 if not new_best_target['val'] else 0
+                    
+                    elif self.early_stop_policy == "best-val-loss" :
+                        impatient_counter = impatient_counter + 1 if not new_best_loss['val'] else 0
+                    
                     elif self.early_stop_policy == "er":
-                        impatient_counter = \
-                            impatient_counter + 1 if (current_gen_err > prev_gen_error) \
-                            else 0
-                        # NB: we reset at any sign of improvement!
-                    else :
-                        #TODO
-                        pass
-                    
-                    # Running out of patience?
-                    early_stop_trigger = impatient_counter >= self.patience
-                    
-                    if early_stop_trigger:
-                        warnings.warn(f"Early stop criteria ({self.early_stop_policy}) met.")
-                        break
-                else :
-                    # Any improvement in validation resets impatience
-                    impatient_counter = 0 
-                
-                prev_gen_error = current_gen_err
-                
-            # TO BE DEPRECATED: stops the whole training if this condition
-            # is met.
-            if self.early_stop and early_stop_trigger and self.halt_training_on_folder_early_stop:
-                warnings.warn(f"halt_training_on_early_stop is deprecated {self.current_epoch}")
+                        if not new_best_loss['val'] and current_gen_err > prev_gen_error:
+                            impatient_counter += 1
+                        else:
+                            impatient_counter = 0
 
-            # === VALIDAZIONE IMMEDIATA DEL FOLD ===
-            scores = self._eval_single_fold(fold_idx=self.current_iter)
-            print(f"{self.current_iter + 1 }-th fold performance:\n{scores}")
+                    else :
+                        warnings.warn(f"{self.early_stop_policy} not implemented yet. Early stop will have no effect")
+                        impatient_counter = -1
+                            
+                    # Running out of patience?
+                    early_stop_trigger = impatient_counter > self.patience
+                    
+                    prev_gen_error = current_gen_err
+            
+                    if early_stop_trigger:
+                        warnings.warn(
+                            f"Early stop criteria ({self.early_stop_policy}) met at "
+                            f"fold =  {self.current_fold + 1}, epoch =  {self.current_epoch + 1}."
+                            )
+                        break
+
+            # Deprecated
+            if self.halt_training_on_folder_early_stop:
+                warnings.warn(f"halt_training_on_early_stop is deprecated")
+
+            # === VALIDATE THIS FOLD ===
+            validation_scores = self._eval_single_fold(fold_idx=self.current_fold)
+            self.training_report(validation_scores)
               
         json_path = os.path.join(self.results_dir, "durations.json")
         with open(json_path, "w") as f:
             json.dump(self.durations, f, indent=4)
 
-        self.validate()
+        validation_summary = self.validate()
+
+        self.experiment_report(
+            validation_summary= validation_summary
+        )
 
     def _eval_single_fold(self, fold_idx: int):
         """
@@ -331,55 +361,54 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             warnings.warn("No per-fold metrics found. Summary cannot be computed.")
             return
 
-        # Aggrega le metriche
         summary = {}
-        keys = all_scores_across_folds[0].keys()
-        scores_array = {k: np.array([fold[k] for fold in all_scores_across_folds], dtype=float)
-                        for k in keys}
 
-        for k in keys:
-            vals = scores_array[k]
+        for k, v in all_scores_across_folds[0].items():
+            
+            if isinstance(v, dict):
+                continue
+
+            vals = np.array([fold[k] for fold in all_scores_across_folds], dtype=float)
             mean = float(np.mean(vals))
-            std = float(np.std(vals, ddof=1))  # campionario
+            std = float(np.std(vals, ddof=1))
             se = float(std / np.sqrt(len(vals)))
+
             summary[k] = {
                 "mean": mean,
                 "std": std,
                 "se": se,
-                "formatted": f"{mean:.3f} ± {std:.3f} ± {se:.3f}"
+                "formatted": f"{mean:.3f} ± {std:.3f}"
             }
 
         # Salva summary finale
         summary_path = os.path.join(self.results_dir, 'val_metrics_summary.json')
         with open(summary_path, 'w') as f:
             json.dump(summary, f, indent=4)
-        
         print(f"Validation summary saved to {summary_path}")
-
+        
+        return summary
+        
     def _eval(self, split: str):
-        """
-        Shared evaluation logic for either 'val' or 'test'. Similar to 
-        your existing 'test()' method, but parameterized by `split`.
-        """
+
         all_labels_across_folds = []
         all_preds_across_folds = []
         all_scores_across_folds = []
 
         ### Loop through folds which have been computed.
         loop = tqdm(range(self.dataset.num_folds))
-        for self.current_iter in loop:
+        for self.current_fold in loop:
             ### Load the dataloader for this fold
-            eval_dataloader = self.dataset.get_dataloader(self.current_iter, split, batch_size=1)
+            eval_dataloader = self.dataset.get_dataloader(self.current_fold, split, batch_size=1)
             if eval_dataloader is None:
                 return
             loop.set_description(f'Running {split} split on {len(eval_dataloader.dataset)} samples')
 
             ### Get latest saved checkpoint for this fold
-            checkpoint_dir = os.path.join(self.results_dir, 'checkpoints', f'fold_{self.current_iter}')
+            checkpoint_dir = os.path.join(self.results_dir, 'checkpoints', f'fold_{self.current_fold}')
             try:
                 ckpt_path = self._pick_checkpoint(checkpoint_dir)
             except FileNotFoundError:
-                warnings.warn(f"No checkpoint found for fold {self.current_iter + 1}. Skipping this fold for {split} evaluation.")
+                warnings.warn(f"No checkpoint found for fold {self.current_fold + 1}. Skipping this fold for {split} evaluation.")
                 continue
 
             ### Load the model and freeze it
@@ -388,7 +417,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                 model = self.load_checkpoint(model, ckpt_path)
                 model = self.freeze(model)
             except Exception as e:
-                warnings.warn(f"Failed to load checkpoint for fold {self.current_iter + 1}: {e}. Skipping this fold.")
+                warnings.warn(f"Failed to load checkpoint for fold {self.current_fold + 1}: {e}. Skipping this fold.")
                 continue
 
             ### Gather labels and predictions
@@ -401,10 +430,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                 all_preds_across_folds.append(preds)
             else:
                 # If multiple folds and multiple samples per fold, save per-fold results
-                per_fold_save_dir = os.path.join(self.results_dir, f'{split}_metrics', f'fold_{self.current_iter}')
-                scores = self._compute_metrics(labels, preds, per_fold_save_dir)
-                all_scores_across_folds.append(scores)
-
+                per_fold_save_dir = os.path.join(self.results_dir, f'{split}_metrics', f'fold_{self.current_fold}')
                 os.makedirs(per_fold_save_dir, exist_ok=True)  # MV added
                 scores = self._compute_metrics(labels, preds, per_fold_save_dir, ids=ids)  # MV ids added
                 all_scores_across_folds.append(scores)
@@ -495,7 +521,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
 
         return labels_all, preds_all, ids_all
     
-    def _compute_metrics(self, labels, preds, save_dir, ids=None):  # MV ids added
+    def _compute_metrics(self, labels, preds, save_dir = None, ids=None):  # MV ids added
         """
         Save metrics to file and return a dictionary of metrics.
         
@@ -506,29 +532,35 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
         """
         if self.task_type == 'classification':
             self.auc_roc(labels, preds, self.classifier_args['num_classes'], 
-                        saveto=os.path.join(save_dir, "roc_curves.png"),
+                        saveto=os.path.join(save_dir, "roc_curves.png") if save_dir is not None else save_dir,
                         label_dict=self.classifier_args['label_dict'],color_map = self.color_map)
             self.precision_recall(labels, preds, self.classifier_args['num_classes'], 
-                                saveto=os.path.join(save_dir, "pr_curves.png"),
+                                saveto=os.path.join(save_dir, "pr_curves.png") if save_dir is not None else save_dir,
                                 label_dict=self.classifier_args['label_dict'],color_map = self.color_map)
             self.confusion_matrix(labels, preds, self.classifier_args['num_classes'], 
-                                saveto=os.path.join(save_dir, "confusion_matrices.png"),
+                                saveto=os.path.join(save_dir, "confusion_matrix.png") if save_dir is not None else save_dir,
                                 label_dict=self.classifier_args['label_dict'])
             scores = self.classification_metrics(labels, preds, self.classifier_args['num_classes'], 
-                                                saveto=os.path.join(save_dir, "metrics.json"),
+                                                saveto=os.path.join(save_dir, "metrics.json") if save_dir is not None else save_dir,
                                                 label_dict=self.classifier_args['label_dict'])
-            np.savez_compressed(  # MV ADDED: Save labels and preds and ids together as a single .npz file
-                os.path.join(save_dir, "labels_preds.npz"),
-                labels=np.array([labels], dtype=object),
-                preds=np.array([preds], dtype=object),
-                ids=np.array([ids], dtype=object) if ids is not None else np.array([None], dtype=object),
-            )
+            if save_dir is not None:
+                np.savez_compressed(  # MV ADDED: Save labels and preds and ids together as a single .npz file
+                    os.path.join(save_dir, "labels_preds.npz"),
+                    labels=np.array([labels], dtype=object),
+                    preds=np.array([preds], dtype=object),
+                    ids=np.array([ids], dtype=object) if ids is not None else np.array([None], dtype=object),
+                )
             return scores['overall']
         
         elif self.task_type == 'survival':
-            scores = self.survival_metrics(labels['survival_event'], labels['survival_time'], preds, saveto = os.path.join(save_dir, "metrics.json"))
+            scores = self.survival_metrics(
+                labels['survival_event'], 
+                labels['survival_time'], 
+                preds, 
+                saveto = os.path.join(save_dir, "metrics.json") if save_dir is not None else save_dir
+            )
             # Optional MV added, functionality not checked yet: also store ids if present
-            if ids is not None:
+            if ids is not None and save_dir is not None:
                 np.savez_compressed(
                     os.path.join(save_dir, "labels_preds.npz"),
                     ids=np.array([ids], dtype=object),
@@ -605,26 +637,24 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             self.model.train()
             context_manager = torch.enable_grad()
             self.optimizer.zero_grad(set_to_none=True) 
-        elif self.mode in ['val']:
+        elif self.mode in ['val','test']:
             self.model.eval()
             context_manager = torch.inference_mode()
         else:
             raise ValueError('mode must be either "train", "val", or "test".')
 
-        # Initialize performance trackers
+        # Initialize epoch's values
         all_losses = []
         all_info = [] # This is additional info returned by the model along with the loss (e.g. predictions, targets, etc.)
         new_best_loss = False
-        new_best_macro_ovr_auc = False
-        new_best_smooth_rank = False #(?)
+        new_best_target_score = False
+        new_best_smooth_rank = False
         num_samples_processed = 0
-        num_gradient_steps = 0
-
-        total_batches = len(self.dataloaders[self.mode])  #MV added
-        
         optimizer_skipped = False
-        
-        # Loop over each batch in loader
+        scores = {}
+        total_batches = len(self.dataloaders[self.mode])
+    
+        # Training Loop
         with context_manager:
             for batch_idx, batch in enumerate(self.dataloaders[self.mode]):
                 num_samples_processed += len(batch['ids'])
@@ -637,64 +667,45 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                 all_losses.append(loss.cpu().detach().numpy())
                 all_info.extend(info)
 
-                # Backward pass if training (note that this is done outside autocast context manager)
                 if self.mode == 'train':
-                    self.grad_scaler.scale(loss / self.accumulation_steps).backward()
-                    if (batch_idx + 1) % self.accumulation_steps == 0:
+                    is_last_batch = (batch_idx + 1 == total_batches)
+                    scale = self._compute_accumulation_scale(batch_idx)
+                    self.grad_scaler.scale(loss / scale).backward()
+
+                    if (batch_idx + 1) % self.accumulation_steps == 0 or is_last_batch:
                         self.grad_scaler.step(self.optimizer)
                         current_scale = self.grad_scaler.get_scale()
                         self.grad_scaler.update()
-                        optimizer_skipped = (self.grad_scaler.get_scale() < current_scale) # If optimizer step was skipped due to gradient overflow, then scale will be reduced. In this case we must skip the scheduler step as well. See https://discuss.pytorch.org/t/optimizer-step-before-lr-scheduler-step-error-using-gradscaler/92930/8
-                        self.optimizer.zero_grad()
-                        num_gradient_steps += 1                        
+
+                        optimizer_skipped = self.grad_scaler.get_scale() < current_scale
+
+                        if optimizer_skipped:
+                            warnings.warn(
+                                f"Optimizer step skipped due to problems related with gradient underflow ({self.grad_scaler.get_scale()} < {current_scale}). "
+                                f"Fold: {self.current_fold}, Epoch: {self.current_epoch}, "
+                                f"Batch idx: {batch_idx}, Global opt step: {self.global_opt_steps}"
+                            )
                         
-                        # Update scheduler on accumulation step if step_on is 'accumulation-step'
-                        if self.scheduler_config and self.scheduler_config['step_on'] == 'accumulation-step' and not optimizer_skipped:
-                            try:
-                                # Default API for built-in LR schedulers
-                                self.scheduler.step()
-                                self.global_opt_step += 1
-                                if self.global_opt_step % self.lr_logging_interval == 0:
-                                    self.log_lr(self.global_opt_step)
-                            except:
-                                raise Exception(f"Error stepping scheduler on accumulation-step.")
+                        # Count optimization step
+                        self.global_opt_steps += not optimizer_skipped
+                        self.log_lr(self.global_opt_steps)
 
-                # Update progress bar
-                if self.view_progress == 'bar' and (batch_idx + 1) % self.accumulation_steps == 0:
-                    self.loop.set_postfix(num_batches = f'{batch_idx + 1}/{len(self.dataloaders[self.mode])}',
-                                        num_samples = num_samples_processed,
-                                        avg_loss = f'{(sum(all_losses)/num_gradient_steps):.4f}')
+                        self.optimizer.zero_grad(set_to_none=True)
 
-            # -------- flush remainder (last partial window non updated) --------
-            if self.mode == 'train':
-                remainder = total_batches % self.accumulation_steps
-                if remainder != 0:
-                    self.grad_scaler.step(self.optimizer)
-                    current_scale = self.grad_scaler.get_scale()
-                    self.grad_scaler.update()
-                    optimizer_skipped = (self.grad_scaler.get_scale() < current_scale)
-                    self.optimizer.zero_grad(set_to_none=True)
-                    num_gradient_steps += 1
-
-                    if self.scheduler_config and self.scheduler_config['step_on'] == 'accumulation-step' and not optimizer_skipped:
-                            self.scheduler.step()
-                            self.global_opt_step += 1
-                            if self.global_opt_step % self.lr_logging_interval == 0:
-                                self.log_lr(self.global_opt_step)
+                        self._lr_step(
+                            update=(
+                                self.scheduler_config['step_on'] == 'model_update'
+                                and not optimizer_skipped
+                            ),
+                            metric = None
+                        )
 
                 if self.view_progress == 'bar':
-                    # Aggiorna la barra per mostrare il totale corretto
                     self.loop.set_postfix(
-                        num_batches = f'{total_batches}/{total_batches}',
-                        num_samples = num_samples_processed,
-                        avg_loss = f'{(sum(all_losses)/num_gradient_steps):.4f}'
+                        batch=f'{batch_idx + 1}/{total_batches}',
+                        samples=num_samples_processed,
+                        loss=f'{loss.item():.4f}'
                     )
-
-        # Update scheduler at end of epoch if step_on is 'epoch'
-        if self.mode == 'train' and self.scheduler_config and self.scheduler_config['step_on'] == 'epoch' and not optimizer_skipped:
-            self.scheduler.step()
-            if self.lr_logging_interval is not None:
-                self.log_lr(self.current_epoch) 
 
         # Save current epoch metrics
         self.current_epoch_metrics = {
@@ -705,33 +716,36 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
 
         # Update best val loss
         if self.mode == 'val':
-            avg_loss = np.mean(all_losses)
+            avg_loss = self.current_epoch_metrics['avg_loss']
             labels, preds, ids = self._accumulate_preds(self.dataloaders[self.mode], self.model)
-            per_epoch_save_dir = os.path.join(self.results_dir,'current_epoch_metrics')
-            os.makedirs(per_epoch_save_dir, exist_ok=True)
             
-            scores = self._compute_metrics(labels, preds, per_epoch_save_dir, ids=ids)
-            macro_ovr_auc = scores["macro-ovr-auc"]
-            self.current_epoch_metrics["macro-ovr-auc"] = macro_ovr_auc
-            self.log_macro_auc_ovr(self.current_epoch,macro_ovr_auc)  
-
+            scores = self._compute_metrics(
+                labels = labels,
+                preds = preds,
+                save_dir=None,
+                ids=ids
+            )
+            self.log_scores(self.current_epoch,scores)
+            
+            # Finding new best validation loss/target metric
             if avg_loss < self.best_val_loss:
                 self.best_val_loss = avg_loss
                 new_best_loss = True
-            if macro_ovr_auc > self.best_macro_ovr_auc:
-                self.best_macro_ovr_auc = macro_ovr_auc
-                new_best_macro_ovr_auc = True
-            if  self.scheduler_config.get('type',None) == 'plateau':
-                self.scheduler.step(macro_ovr_auc)
-                if self.lr_logging_interval is not None:
-                    self.log_lr(self.current_epoch) 
 
-        self.compute_extra_metrics()
+            if self.target_score:
+                self.log_target_score(self.current_epoch, scores[self.target_score])
+                if self._is_new_best_score(scores.get(self.target_score)):
+                    self.best_target_score = scores[self.target_score]
+                    new_best_target_score = True
+
+            # Update is scheduler is plateau
+            if self.scheduler_config['type'] == 'plateau':
+                self._plateau_step(scores)
 
         # Update best smooth rank
         if isinstance(all_info[0], dict) and 'smooth_rank' in all_info[0].keys():
             smooth_rank = np.mean([info['smooth_rank'] for info in all_info])
-            self.current_epoch_metrics['smooth_rank'] = smooth_rank # Add smooth rank to metrics
+            self.current_epoch_metrics['smooth_rank'] = smooth_rank
             if smooth_rank > self.best_smooth_rank:
                 self.best_smooth_rank = smooth_rank
                 new_best_smooth_rank = True
@@ -741,23 +755,103 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
         # Save checkpoints
         save_conditions = [self.save_which_checkpoints == 'all',
                            self.save_which_checkpoints == 'best-val-loss' and new_best_loss,
-                           self.save_which_checkpoints == 'best-macro-ovr-auc' and new_best_macro_ovr_auc,
+                           self.save_which_checkpoints == f'best-{self.target_score}' and new_best_target_score,
                            self.save_which_checkpoints == 'best-smooth-rank' and new_best_smooth_rank,
                            self.save_which_checkpoints.startswith('every-') and (self.current_epoch + 1) % int(self.save_which_checkpoints.split('-')[1]) == 0,
                            self.save_which_checkpoints.startswith('last-') and (self.current_epoch + 1) > self.num_epochs - int(self.save_which_checkpoints.split('-')[1])]
         if any(save_conditions):
-            self.save_checkpoint(self.model, self.save_which_checkpoints, os.path.join(self.results_dir,
-                                                                            'checkpoints', 
-                                                                            f'fold_{self.current_iter}',
-                                                                            f"epoch_{self.current_epoch}.pt"))
+            self.save_checkpoint(
+                self.model, 
+                self.save_which_checkpoints, 
+                os.path.join(self.results_dir,
+                'checkpoints', 
+                f'fold_{self.current_fold}',
+                f"epoch_{self.current_epoch}.pt")
+            )
+            
+        self.log_loss(self.current_epoch) 
+        # self.log_smooth_rank(self.current_epoch)
 
-        self.log_loss(self.current_epoch) # Log loss to dashboard on epoch end
-        self.log_smooth_rank(self.current_epoch) # Log smooth rank to dashboard on epoch end
+        return (
+            new_best_loss, 
+            self.current_epoch_metrics['avg_loss'],
+            new_best_target_score,
+            scores.get(self.target_score),
+        )
+    
+    def _plateau_step(self, scores: dict):
+        step_on = self.scheduler_config.get('step_on')
 
-        # Save current epoch's metrics
-        # self.save_current_epoch_metrics(os.path.join(self.results_dir,"epoch_metrics.json"))
+        if step_on is None:
+            raise RuntimeError(
+                f"'step_on' cannot be None when using plateau scheduler. Scheduler config: {self.scheduler_config}"
+            )
 
-        return new_best_loss, self.current_epoch_metrics['avg_loss']
+        if step_on == 'val':
+            metric = self.current_epoch_metrics.get('avg_loss')
+            if metric is None:
+                raise RuntimeError(
+                    f"'avg_loss' for validation is None. Cannot step scheduler on '{step_on}'. "
+                    f"Current metrics: {self.current_epoch_metrics}"
+                )
+
+        elif step_on in scores:
+            metric = scores[step_on]
+            if metric is None:
+                raise RuntimeError(
+                    f" scores[{step_on}]' is invalid ({metric = }). Available scores: {list(scores.keys())}"
+                )
+
+        else:
+            parts = step_on.split('-')
+            if len(parts) == 2:
+                agg, metric_name = parts
+                metric_dict = scores.get(metric_name)
+                if metric_dict is None:
+                    raise RuntimeError(
+                        f"Metric '{metric_name}' not found in scores. Available scores: {list(scores.keys())}"
+                    )
+                if agg not in metric_dict or metric_dict[agg] is None:
+                    raise RuntimeError(
+                        f"Aggregation '{agg}' not found or None in metric '{metric_name}'. "
+                        f"Available keys: {list(metric_dict.keys())}, Scores: {scores}"
+                    )
+                metric = metric_dict[agg]
+            else:
+                raise RuntimeError(
+                    f"Invalid 'step_on' value '{step_on}' "
+                    f"Available solutions: {list(scores.keys()).extend('val')}"
+                )
+
+        self._lr_step(update=True, metric=metric)
+
+    def _lr_step(self,update,metric = None):
+            if update : 
+                if metric is not None:
+                    self.scheduler.step(metric)
+                else:
+                    self.scheduler.step()
+            return
+        
+    def _compute_accumulation_scale(self, batch_idx : int):
+            """
+            Computes the normalization factor for the current micro-batch loss.
+            """
+            # 1. Identify the current accumulation block (e.g., 0-3 : 0, 4-7 : 4 for accumulation_steps = 4)
+            current_block_start = (batch_idx // self.accumulation_steps) * self.accumulation_steps
+            
+            # 2. Determine the end of the current block
+            # It's either the full accumulation step or the end of the dataset
+            total_batches = len(self.dataloaders[self.mode])
+            current_block_end = min(total_batches, current_block_start + self.accumulation_steps)
+            
+            # 3. The true scale is the actual number of steps in this specific block
+            update_window_length = current_block_end - current_block_start
+
+            # Tracks different scales used, main for debugging purposes
+            self.ga_scaling_factors.add(update_window_length)
+            
+            return update_window_length
     
     def _init_scheduler(self):
         
@@ -768,6 +862,12 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
         if isinstance(self.scheduler_config['type'], str):
             # Using built-in scheduler
             if self.scheduler_config['type'] == 'plateau':
+                stepping_policy = self.scheduler_config['step_on']
+
+                # Breaks if the policy is not valid
+                if stepping_policy not in ClassificationMixin.SCALAR_SCORES and stepping_policy != "val":
+                    raise ValueError(f"'{stepping_policy}' is not a valid metric.")
+
                 return torch.optim.lr_scheduler.ReduceLROnPlateau(
                     self.optimizer,
                     mode=self.scheduler_config['mode'],
@@ -800,6 +900,22 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                     T_0=self.scheduler_config['T_0'],
                     T_mult=self.scheduler_config['T_mult'],
                     eta_min=self.scheduler_config['eta_min'])
+            elif self.scheduler_config['type'] == 'gigapath':
+                from patho_bench.optim.GigaPathOptim import CustomLRScheduler
+                try: 
+                    default_scheduler_args = {
+                        'base_lr': self.optimizer_config['base_lr'],
+                        'max_epochs': self.num_epochs,
+                        'accumulation_steps': self.accumulation_steps,
+                        'len_dataloader': len(self.dataloaders['train']),
+                    }
+                    return CustomLRScheduler(
+                        optimizer=self.optimizer,
+                        default_scheduler_args=default_scheduler_args,
+                        custom_scheduler_args=self.scheduler_config
+                    )
+                except Exception as e:
+                    raise Exception(f"Error initializing custom scheduler: {e}. \nExpected init format: CustomScheduler(optimizer: Optimizer, default_scheduler_args: dict, custom_scheduler_args: dict)")
             else:
                 raise NotImplementedError(f"Scheduler type {self.scheduler_config['type']} not implemented.")
 
@@ -845,3 +961,311 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             return AdamW(param_groups, self.optimizer_config['base_lr'], **extra_kwargs)
         else:
             raise NotImplementedError(f"Optimizer {optimizer_type} not implemented.")
+                     
+    def _is_new_best_score(self,candidate: float) -> bool:
+
+        if candidate is None:
+            return False
+        
+        lower_is_better = {"val-loss"}
+
+        if self.target_score in lower_is_better:
+            return candidate < self.best_target_score
+
+        if self.target_score in ClassificationMixin.SCALAR_SCORES:
+            return candidate > self.best_target_score
+
+        # Fallback: unknown metric
+        warnings.warn(
+            f"Score type '{self.target_score}' not recognised as a valid metric."
+            "Assuming higher is better.",
+            RuntimeWarning,
+        )
+        return candidate > self.best_target_score
+
+    def _compute_avg_durations(self):
+        train_durations = []
+        val_durations = []
+
+        for fold_runs in self.durations.values():
+            for run in fold_runs:
+                train_durations.append(run["train"])
+                val_durations.append(run["val"])
+
+        avg_train = np.mean(train_durations)
+        avg_val = np.mean(val_durations)
+
+        return avg_train, avg_val
+
+    def _fmt_duration(self, seconds):
+        if seconds is None:
+            return "N/A"
+        return str(timedelta(seconds=int(seconds)))
+
+    def get_device_info(self):
+        """
+        Returns a dictionary with detailed device info for the current device.
+        """
+
+        info = {}
+
+        if 'cuda' in str(self.device) and torch.cuda.is_available():
+            device = torch.device(self.device)
+            device_idx = device.index if hasattr(device, 'index') else 0
+            props = torch.cuda.get_device_properties(device_idx)
+
+            info['Index'] = device_idx
+            info['Name'] = props.name
+            info['VRAM (GB)'] = props.total_memory / (1024 ** 3)
+            info['MultiProcessor Count'] = props.multi_processor_count
+        else:
+            info['Index'] = "N/A"
+            info['Name'] = str(self.device)
+            info['VRAM (GB)'] = "N/A"
+            info['MultiProcessor Count'] = "N/A"
+        return info
+
+    @staticmethod
+    def _print_kv(key, value, width_key=40, width_val=70, indent=0):
+        """Utility: print key/value with wrapping for long values."""
+        indent_str = " " * indent
+        value_str = str(value)
+        # wrap long lines
+        wrapped = textwrap.wrap(value_str, width=width_val)
+        if wrapped:
+            print(f"{indent_str}{key:<{width_key}}: {wrapped[0]}")
+            for line in wrapped[1:]:
+                print(f"{indent_str}{'':<{width_key}}  {line}")
+        else:
+            print(f"{indent_str}{key:<{width_key}}: {value_str}")
+
+    @staticmethod
+    def _print_section(title: str, width: int = 120, pad: str = "-"):
+        title = f" {title} "
+        side = max((width - len(title)) // 2, 0)
+        line = pad * side + title + pad * (width - side - len(title))
+        print(line)
+
+    def experiment_report(self, validation_summary: dict = None):
+        now = datetime.now()
+        width_total = self.WIDTH_EXP
+
+        print("\n" + "=" * width_total)
+        title = "EXPERIMENT OVERVIEW" if validation_summary is None else "FINAL SUMMARY"
+        print(f"{title:^{width_total}}")
+
+        date_time_dir = f"Date: {now.strftime('%Y-%m-%d %H:%M:%S')} | Results Directory: {self.results_dir}"
+        print(f"{date_time_dir:^{width_total}}")
+
+        print("=" * width_total)
+
+        if validation_summary is None:
+            self._print_section("GENERAL INFO", width_total)
+            info_lines = [
+                ("Task Type", self.task_type),
+                ("Number of Folds", self.dataset.num_folds),
+                ("Epochs", self.num_epochs),
+                ("(Phisical) Batch Size", self.device_batch_size),
+                ("Gradient Accumulation Steps", self.accumulation_steps),
+                ("Batch Size", self._batch_size),
+                ("Precision", self.precision),
+                ("Seed", self.seed),
+                ("Force determinism in cuda", self.disable_cudnn),
+                ("Early Stop Enabled", self.early_stop),
+            ]
+            if self.early_stop:
+                info_lines += [
+                    ("Early Stop Policy", self.early_stop_policy),
+                    ("Early Stop Patience", self.patience),
+                ]
+
+            for k, v in info_lines:
+                if isinstance(v, type) or str(v).startswith("torch."):
+                    continue
+                self._print_kv(k, v)
+
+            self._print_section("MODEL INFO", width_total)
+            for k, v in self.classifier_args.items():
+                if isinstance(v, torch.nn.Module):
+                    v = f"See model in {os.path.join(self.results_dir, 'model.txt')}"
+                self._print_kv(k, v)
+
+            self._print_section("OPTIMIZER INFO", width_total)
+            for k, v in self.optimizer_config.items():
+                self._print_kv(k, v)
+
+            self._print_section("SCHEDULER INFO", width_total)
+            for k, v in self.scheduler_config.items():
+                self._print_kv(k, v)
+
+            self._print_section("DEVICE INFO", width_total)
+            for k, v in self.get_device_info().items():
+                self._print_kv(k, v)
+
+        else:
+            total_train = sum(d["train"] for dl in self.durations.values() for d in dl)
+            total_val = sum(d["val"] for dl in self.durations.values() for d in dl)
+            total_overall = total_train + total_val
+
+            self._print_section("EXPERIMENT DURATION (HH:MM:SS)", width_total)
+            print(f"Train:      {self._fmt_duration(total_train)}")
+            print(f"Validation: {self._fmt_duration(total_val)}")
+            print(f"Overall:    {self._fmt_duration(total_overall)}\n")
+
+            self._print_section(f"VALIDATION SUMMARY (Bootstraps {self.num_bootstraps})", width_total)
+            headers = ["Metric", "Mean ± Std"]
+            rows = [[metric, vals["formatted"]] for metric, vals in validation_summary.items()]
+            col_widths = [50, 65]
+            self._print_table(headers, rows, col_widths, width=width_total)
+            print("=" * width_total + "\n\n")
+
+    def training_report(self, validation_scores: dict = None):
+        num_folds = self.dataset.num_folds
+        fold = self.current_fold + 1
+        num_samples_train = len(self.dataloaders["train"].dataset) if self.dataloaders.get("train") else 0
+        num_samples_val = len(self.dataloaders["val"].dataset) if self.dataloaders.get("val") else 0
+        now = datetime.now()
+        width_total = self.WIDTH_FOLD
+
+        if validation_scores is None:
+            # ===== START OF FOLD =====
+            self.fold_start_time = now
+
+            print("\n" + "#" * width_total)
+            print(f"{f'FOLD {fold}/{num_folds}':^{width_total}}")
+            s = f"Date: {self.fold_start_time.strftime('%Y-%m-%d %H:%M:%S')}"
+            print(f"{s:^{width_total}}")
+            print("#" * width_total)
+
+            self._print_section("DATA", width_total)
+
+            headers = ["Info", "Train", "Val"]
+            rows = [
+                ["WSIs", num_samples_train, num_samples_val],
+                ["Physical Batches", self.num_phisical_batches_train, self.num_phisical_batches_val],
+                ["Batches", self.num_batches_train, self.num_batches_val]
+            ]
+            col_widths = [35, 8, 8]
+
+            self._print_table(headers, rows, col_widths, width=width_total)
+
+        else:
+            # ===== END OF FOLD =====
+            self.fold_end_time = now
+
+            total_train_time = sum(d["train"] for d in self.durations[self.current_fold])
+            total_val_time = sum(d["val"] for d in self.durations[self.current_fold])
+            total_time = total_train_time + total_val_time
+            avg_train, avg_val = self._compute_avg_durations()
+
+            print("#" * width_total)
+            print(f"{f'TRAINING SUMMARY: FOLD {fold}':^{width_total}}")
+            s = f"Date: {self.fold_start_time.strftime('%Y-%m-%d %H:%M:%S')}"
+            print(f"{s:^{width_total}}")
+            print("#" * width_total)
+
+            self._print_section("DURATION", width_total)
+
+            # Tabella con le prime due righe
+            headers = ["Value", "Train | Valid"]
+            rows = [
+                ["Total ", f"{self._fmt_duration(total_train_time)} | {self._fmt_duration(total_val_time)}"],
+                ["Average ", f"{self._fmt_duration(avg_train)} | {self._fmt_duration(avg_val)}"]
+            ]
+            col_widths = [50, 65]  # larghezza colonne, adatta al width_total
+
+            self._print_table(headers, rows, col_widths, width=width_total)
+
+            # Righe singole, fuori tabella
+            self._print_kv(
+                "Total duration (train + valid): ",
+                self._fmt_duration(total_time)
+            )
+
+            self._print_section("EPOCH SUMMARY", width_total)
+            self._print_kv(
+                "Training Epochs (actual / planned)",
+                f"{self.fold_training_epochs} / {self.num_epochs}"
+            )
+            self._print_kv(
+                "Total Optimization Steps",
+                f"{self.global_opt_steps} / {self.num_batches_train}"
+            )
+            self._print_kv(
+                "Accumulation Scaling Employed",
+                self.ga_scaling_factors
+            )
+
+            if self.target_score and validation_scores:
+                self._print_kv(
+                    f"({self.target_score})",
+                    f"{validation_scores.get(self.target_score):.2f}"
+                )
+
+            print("#" * width_total)
+
+    @staticmethod
+    def _print_table(headers, rows, col_widths, width=120):
+        """
+        Print a table fully framed, centered in the given width.
+        Uses: | for vertical borders, _ for top/bottom, - for inner separators.
+        """
+        # calcola larghezza tabella corretta
+        table_width = sum(col_widths) + len(col_widths) + 1  # +1 per il primo | e +1 per ogni separatore
+
+        # indent per centrare
+        indent = max((width - table_width) // 2, 0)
+        pad = " " * indent
+
+        # funzione per costruire una riga
+        def _row(items):
+            cells = [f"{str(item):<{w}}" for item, w in zip(items, col_widths)]
+            return pad + "|" + "|".join(cells) + "|"
+
+        # linee superiori / inferiori
+        hline = pad + "-" * table_width
+        sep_line = pad + "-" * table_width
+
+        # stampa tabella
+        print(hline)
+        print(_row(headers))
+        print(sep_line)
+        for r in rows:
+            print(_row(r))
+        print(hline)
+
+    def _print_training_header(self):
+        """Stampa l’intestazione della tabella training, centrata."""
+        # intestazione sezione
+        self._print_section("TRAINING", width=self.WIDTH_FOLD)
+
+        # definizione larghezze colonne
+        col_widths = [self.EPOCH_W, self.PHASE_W, self.DURATION_W]
+        headers = ["EPOCH", "PHASE", "DURATION (HH:MM:SS)"]
+
+        # larghezza totale tabella (colonne + pipe + spazi)
+        table_width = sum(col_widths) + len(col_widths) + 1
+        indent = max((self.WIDTH_FOLD - table_width) // 2, 0)
+        pad = " " * indent
+
+        # linee superiori e separatori
+        hline = pad + "-" * table_width
+        sep_line = pad + "-" * table_width
+
+        # stampa header
+        print(hline)
+        header_row = pad + "|" + "|".join(f"{h:^{w}}" for h, w in zip(headers, col_widths)) + "|"
+        print(header_row)
+        print(sep_line)
+
+    def _print_training_row(self, epoch, phase, duration_seconds):
+        """Stampa una riga della tabella training, centrata."""
+        col_widths = [self.EPOCH_W, self.PHASE_W, self.DURATION_W]
+        table_width = sum(col_widths) + len(col_widths) + 1
+        indent = max((self.WIDTH_FOLD - table_width) // 2, 0)
+        pad = " " * indent
+
+        duration_str = str(timedelta(seconds=int(duration_seconds)))
+        row_items = [epoch, phase, duration_str]
+        row_str = pad + "|" + "|".join(f"{str(i):^{w}}" for i, w in zip(row_items, col_widths)) + "|"
+        print(row_str)
