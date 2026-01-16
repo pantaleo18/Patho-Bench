@@ -37,4 +37,5 @@
         "min_lr": 1e-8,
         "step_on": "model_update"
     }
+    
 }

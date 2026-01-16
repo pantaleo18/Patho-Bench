@@ -21,8 +21,6 @@ import math
 import warnings
 import textwrap
 
-
-
 # Turn off tokenizer parallelism to avoid warnings from dataloader
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -204,18 +202,27 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                 total_duration = {'train': 0, 'val': 0}
 
                 for self.mode in ['train', 'val']:
-                # ON BOTH SPLITS OF THIS DEVELOPMENT FOLDER
+                
                     if self.dataloaders[self.mode] is not None:
                         
-                        # Progresses
                         if self.view_progress == 'bar':
                             self.loop.set_description(f'Epoch {self.current_epoch} {self.mode}')
 
-                        # Epoch core
+                        
                         start = time.time()
                         new_best_loss[self.mode], epoch_loss[self.mode], new_best_target[self.mode], _ = \
                             self._run_single_epoch()
                         end = time.time()
+
+                        self._lr_step(
+                            update = (
+                                (self.scheduler_config['step_on'] == "epoch") and # <--- if step @ epochs 
+                                (self.scheduler_config['type'] != "plateau") and # <- plateau may need validation metrics
+                                (self.mode == "train") # <-- only when training
+                            ), 
+                            metric = None,
+                            step = self.current_epoch
+                        )                        
     
                         duration = end - start
                         if self.view_progress == "verbose": 
@@ -224,15 +231,9 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                                 phase=self.mode,
                                 duration_seconds=duration
                             )
+                        # Store duration
+                        total_duration[self.mode] += duration
 
-                        self._lr_step(
-                            update = self.scheduler_config['step_on'] == 'epoch' and self.mode == "val",
-                            metric = None
-                        )
-                        
-                    # Store duration
-                    total_duration[self.mode] += duration
-                
                 # Save duration
                 self.durations[self.current_fold].append({
                         "train": total_duration['train'],
@@ -268,7 +269,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                         warnings.warn(
                             f"Early stop criteria ({self.early_stop_policy}) met at "
                             f"fold =  {self.current_fold + 1}, epoch =  {self.current_epoch + 1}."
-                            )
+                        )
                         break
 
             # Deprecated
@@ -639,8 +640,8 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                         self.grad_scaler.step(self.optimizer)
                         current_scale = self.grad_scaler.get_scale()
                         self.grad_scaler.update()
-
                         optimizer_skipped = self.grad_scaler.get_scale() < current_scale
+                        self.optimizer.zero_grad(set_to_none=True)
 
                         if optimizer_skipped:
                             warnings.warn(
@@ -651,17 +652,16 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                         
                         # Count optimization step
                         self.global_opt_steps += not optimizer_skipped
-                        self.log_lr(self.global_opt_steps)
-
-                        self.optimizer.zero_grad(set_to_none=True)
 
                         self._lr_step(
                             update=(
                                 self.scheduler_config['step_on'] == 'model_update'
                                 and not optimizer_skipped
                             ),
-                            metric = None
+                            metric = None,
+                            step = self.global_opt_steps
                         )
+                    
 
                 if self.view_progress == 'bar':
                     self.loop.set_postfix(
@@ -670,6 +670,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                         loss=f'{loss.item():.4f}'
                     )
 
+        
         # Save current epoch metrics
         self.current_epoch_metrics = {
             "loss": all_losses,
@@ -786,10 +787,12 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                     f"Available solutions: {list(scores.keys()).extend('val')}"
                 )
 
-        self._lr_step(update=True, metric=metric)
+        self._lr_step(update=True, metric=metric,step = self.current_epoch)
 
-    def _lr_step(self,update,metric = None):
+    def _lr_step(self,update,metric = None, step  = None):
             if update : 
+                self.log_lr(step)
+
                 if metric is not None:
                     self.scheduler.step(metric)
                 else:
@@ -815,99 +818,110 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             return update_window_length
     
     def _init_scheduler(self):
-        
-        if isinstance(self.scheduler_config['type'], str):
-            # Using built-in scheduler
-            if self.scheduler_config['type'] == 'plateau':
-                stepping_policy = self.scheduler_config['step_on']
 
-                # Breaks if the policy is not valid
-                if stepping_policy not in ClassificationMixin.SCALAR_SCORES and stepping_policy != "val":
-                    raise ValueError(f"'{stepping_policy}' is not a valid metric.")
+        if 'warmup' in self.scheduler_config:
+            warmup_cfg = self.scheduler_config['warmup']
+            warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
+                self.optimizer,
+                start_factor=warmup_cfg.get('start_factor', 1/3),
+                end_factor=warmup_cfg.get('end_factor', 1.0),
+                total_iters=warmup_cfg.get('total_iters', 5)
+            )
 
-                return torch.optim.lr_scheduler.ReduceLROnPlateau(
-                    self.optimizer,
-                    mode=self.scheduler_config['mode'],
-                    factor=self.scheduler_config['factor'],
-                    patience=self.scheduler_config['patience'],
-                    threshold = self.scheduler_config['threshold']
-                    )
-            
-            elif self.scheduler_config['type'] == 'step':
-                return torch.optim.lr_scheduler.MultiStepLR(
-                    self.optimizer,
-                    milestones=self.scheduler_config['milestones'],
-                    gamma=self.scheduler_config['gamma']
-                )
-            elif self.scheduler_config['type'] == 'cosine':
-                total_optimizer_steps = (
-                    self.num_epochs
-                    if self.scheduler_config['step_on'] == 'epoch'
-                    else self.num_batches_train * self.num_epochs
-                )
-                return torch.optim.lr_scheduler.CosineAnnealingLR(
-                    self.optimizer,
-                    T_max=total_optimizer_steps,
-                    eta_min=self.scheduler_config['eta_min']
-                )
-            
-            elif self.scheduler_config['type'] == 'cosine_warm_restart':
-                return torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-                    self.optimizer,
-                    T_0=self.scheduler_config['T_0'],
-                    T_mult=self.scheduler_config['T_mult'],
-                    eta_min=self.scheduler_config['eta_min'])
-            
-            elif self.scheduler_config['type'] == 'exp':
-                return torch.optim.lr_scheduler.ExponentialLR(
-                    optimizer=self.optimizer,
-                    gamma=self.scheduler_config['gamma']
-                )
-            
-            elif self.scheduler_config['type'] == 'linear':
-                return torch.optim.lr_scheduler.LinearLR(
-                    optimizer = self.optimizer,
-                    start_factor=self.optimizer     
-                )
-            
-            elif self.scheduler_config['type'] == 'gigapath':
-                from patho_bench.optim.GigaPathOptim import CustomLRScheduler
-                try: 
-                    default_scheduler_args = {
-                        'base_lr': self.optimizer_config['base_lr'],
-                        'max_epochs': self.num_epochs,
-                        'accumulation_steps': self.gradient_accumulation,
-                        'len_dataloader': len(self.dataloaders['train']),
-                    }
-                    return CustomLRScheduler(
-                        optimizer=self.optimizer,
-                        default_scheduler_args=default_scheduler_args,
-                        custom_scheduler_args=self.scheduler_config
-                    )
-                except Exception as e:
-                    raise Exception(f"Error initializing custom scheduler: {e}. \nExpected init format: CustomScheduler(optimizer: Optimizer, default_scheduler_args: dict, custom_scheduler_args: dict)")
-            else:
-                raise NotImplementedError(f"Scheduler type {self.scheduler_config['type']} not implemented.")
+            main_scheduler = self._create_main_scheduler()
 
-        elif callable(self.scheduler_config['type']):
-            # Using custom scheduler class
-            try:
-                default_scheduler_args = {
-                    'base_lr': self.optimizer_config['base_lr'],
-                    'max_epochs': self.num_epochs,
-                    'accumulation_steps': self.gradient_accumulation,
-                    'len_dataloader': len(self.dataloaders['train']),
-                }
-
-                return self.scheduler_config['type'](
-                    optimizer=self.optimizer,
-                    default_scheduler_args=default_scheduler_args,
-                    custom_scheduler_args=self.scheduler_config)
-            except Exception as e:
-                raise Exception(f"Error initializing custom scheduler: {e}. \nExpected init format: CustomScheduler(optimizer: Optimizer, default_scheduler_args: dict, custom_scheduler_args: dict)")
-
+            # Concateno warmup + main
+            return torch.optim.lr_scheduler.SequentialLR(
+                self.optimizer,
+                schedulers=[warmup_scheduler, main_scheduler],
+                milestones=[warmup_cfg.get('total_iters', 5)]
+            )
         else:
-            raise ValueError(f"Scheduler type must be a string or a callable, got {self.scheduler_config['type']} instead.")
+            return self._create_main_scheduler()
+
+    def _create_main_scheduler(self):
+        
+        scheduler_type = self.scheduler_config['type']
+        step_on = self.scheduler_config.get('step_on', 'epoch')
+        
+        if scheduler_type == 'plateau':
+            stepping_policy = self.scheduler_config['step_on']
+            if stepping_policy not in ClassificationMixin.SCALAR_SCORES and stepping_policy != "val":
+                raise ValueError(f"'{stepping_policy}' is not a valid metric.")
+            return torch.optim.lr_scheduler.ReduceLROnPlateau(
+                self.optimizer,
+                mode=self.scheduler_config['mode'],
+                factor=self.scheduler_config['factor'],
+                patience=self.scheduler_config['patience'],
+                threshold=self.scheduler_config['threshold'],
+                min_lr=self.scheduler_config.get('min_lr', 0)
+            )
+        
+        elif scheduler_type == 'step':
+            return torch.optim.lr_scheduler.MultiStepLR(
+                self.optimizer,
+                milestones=self.scheduler_config['milestones'],
+                gamma=self.scheduler_config['gamma']
+            )
+        
+        elif scheduler_type == 'cosine':
+            total_optimizer_steps = (
+                self.num_epochs if step_on == 'epoch' else self.num_batches_train * self.num_epochs
+            )
+            return torch.optim.lr_scheduler.CosineAnnealingLR(
+                self.optimizer,
+                T_max=total_optimizer_steps,
+                eta_min=self.scheduler_config['eta_min']
+            )
+        
+        elif scheduler_type == 'cosine_warm_restart':
+            return torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+                self.optimizer,
+                T_0=self.scheduler_config['T_0'],
+                T_mult=self.scheduler_config['T_mult'],
+                eta_min=self.scheduler_config['eta_min']
+            )
+        
+        elif scheduler_type == 'exp':
+            return torch.optim.lr_scheduler.ExponentialLR(
+                optimizer=self.optimizer,
+                gamma=self.scheduler_config['gamma']
+            )
+        
+        elif scheduler_type == 'linear':
+            return torch.optim.lr_scheduler.LinearLR(
+                optimizer=self.optimizer,
+                start_factor=self.scheduler_config['start_factor']
+            )
+        
+        elif scheduler_type == 'gigapath':
+            from patho_bench.optim.GigaPathOptim import CustomLRScheduler
+            default_scheduler_args = {
+                'base_lr': self.optimizer_config['base_lr'],
+                'max_epochs': self.num_epochs,
+                'accumulation_steps': self.gradient_accumulation,
+                'len_dataloader': len(self.dataloaders['train']),
+            }
+            return CustomLRScheduler(
+                optimizer=self.optimizer,
+                default_scheduler_args=default_scheduler_args,
+                custom_scheduler_args=self.scheduler_config
+            )
+        
+        elif callable(scheduler_type):
+            default_scheduler_args = {
+                'base_lr': self.optimizer_config['base_lr'],
+                'max_epochs': self.num_epochs,
+                'accumulation_steps': self.gradient_accumulation,
+                'len_dataloader': len(self.dataloaders['train']),
+            }
+            return scheduler_type(
+                optimizer=self.optimizer,
+                default_scheduler_args=default_scheduler_args,
+                custom_scheduler_args=self.scheduler_config
+            )
+        else:
+            raise NotImplementedError(f"Scheduler type {scheduler_type} not implemented.")
 
     def _init_optimizer(self):
         optimizer_type = self.optimizer_config['type']

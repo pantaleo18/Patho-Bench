@@ -55,7 +55,7 @@ class LoggingMixin:
         
         training_loggers = {
             "loss": TrainingMetricsLogger(save_dir, "loss", step_on="epoch"),
-            "lr": TrainingMetricsLogger(save_dir, "lr", step_on="update"),
+            "lr": TrainingMetricsLogger(save_dir, "lr", step_on=self.scheduler_config["step_on"]),
             "smooth_rank": TrainingMetricsLogger(save_dir, "smooth_rank", step_on="epoch"),
         }
 
