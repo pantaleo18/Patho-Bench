@@ -7,12 +7,10 @@ from tqdm import tqdm
 import json
 import warnings
 
-# Import optimizers
 from torch.optim import Adam
 from torch.optim import SGD
 from torch.optim import AdamW
 
-# Other imports
 from patho_bench.datasets.BaseDataset import BaseDataset
 from patho_bench.experiments.BaseExperiment import BaseExperiment
 from patho_bench.experiments.utils.LoggingMixin import LoggingMixin
@@ -27,10 +25,6 @@ import textwrap
 
 # Turn off tokenizer parallelism to avoid warnings from dataloader
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
-
-"""
-This file contains the FinetuningExperiment class, which is used to train and test supervised neural network models.
-"""
 
 class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, BaseExperiment):
 
@@ -47,7 +41,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                  model_constructor: callable,
                  classifier_args: dict,
                  num_epochs: int,
-                 accumulation_steps: int,
+                 gradient_accumulation: int,
                  optimizer_config: dict,
                  scheduler_config: dict,
                  save_which_checkpoints: str,
@@ -64,41 +58,17 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                  patience : int = 3,
                  halt_training_on_folder_early_stop : bool = False,
                  **kwargs):
-        """
-        Base class for all experiments.
 
-        Args:
-            task_type (str): Type of task. Can be 'classification' or 'survival'.
-            dataset (BaseDataset): Dataset object
-            batch_size (int): Batch size.
-            model_constructor (callable): Model class which can be called to create model instance.
-            classifier_kwargs: Arguments passed to model_constructor.
-            num_epochs (int): Number of epochs.
-            accumulation_steps (int): Number of batches to accumulate gradients over before stepping optimizer.
-            optimizer_config: Optimizer config.
-            scheduler_config: LR scheduler config.
-            save_which_checkpoints (str): Mode of saving checkpoints.
-            num_bootstraps (int): Number of bootstraps to use for computing 95% CI.
-            precision (torch.dtype): Precision to use for training.
-            device (str): Device to use for training.
-            results_dir (str): Where to save results.
-            view_progress (str, optional): How to log progress. Can be 'bar' or 'verbose'. Defaults to 'bar'.
-            seed (int): Seed for reproducibility.
-            early_stop : bool, halt the training when validation performance stop improving (defualt = True). Use `patience` to regulate it.
-            patience : int, define how many epochs to wait for improvement before stopping (default = 3).
-            **kwargs: Additional arguments to save in config.json
-        """
         self.task_type = task_type
         self.dataset = dataset
         self.device_batch_size = device_batch_size
-        self.accumulation_steps = accumulation_steps
-        self._batch_size = self.device_batch_size * self.accumulation_steps
+        self.gradient_accumulation = gradient_accumulation
+        self._batch_size = self.device_batch_size * self.gradient_accumulation
         self.model_constructor = model_constructor
-        self.classifier_args = classifier_args
+        self.model_kwargs = classifier_args
         self.num_epochs = num_epochs
         self.optimizer_config = optimizer_config
         self.scheduler_config = scheduler_config
-        self.save_which_checkpoints = save_which_checkpoints
         self.num_bootstraps = num_bootstraps
         self.precision = precision
         self.device = device
@@ -113,25 +83,48 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
         self.patience = patience
         self.halt_training_on_folder_early_stop = halt_training_on_folder_early_stop
         self.target_score = None
-        
+        self.save_which_checkpoints = self._define_saving_policy(save_which_checkpoints=save_which_checkpoints)
+
         # Set kwargs as extra attributes for saving in config.json
         for key, value in kwargs.items():
             setattr(self, key, value)
         
-        # Ensure that val set is nonempty if save_which_checkpoints is 'best-val-loss'
-        if self.save_which_checkpoints == 'best-val-loss':
-            assert self.dataset.get_subset(iteration = 0, fold = 'val') is not None, "Split must contain validation samples if save_which_checkpoints is 'best-val-loss'."
+    def _define_saving_policy(self,save_which_checkpoints):
 
-        # Monitor save-target-score if needed
-        if self.save_which_checkpoints.startswith("best-"):
-            _save_policy = self.save_which_checkpoints[len("best-"):]
-            if _save_policy not in ["val","loss","train","val-loss"]:
-                self.target_score = self.save_which_checkpoints[len("best-"):]
+        if save_which_checkpoints == 'best-val-loss':
+            if self.dataset.get_subset(iteration=0, fold='val') is None:
+                warnings.warn(
+                    "'best-val-loss' requested but the validation dataset is empty. "
+                    "Falling back to 'last-1'."
+                )
+                save_which_checkpoints = 'last-1'
+
+        elif save_which_checkpoints.startswith("best-"):
+            _save_policy = save_which_checkpoints[len("best-"):]
+            
+            if _save_policy == "step_on":
+                if self.scheduler_config.get('type') == 'plateau':
+                    self.target_score = self.scheduler_config.get('step_on')
+                else:
+                    warnings.warn(
+                        "'best-step_on' requested but the scheduler type is not 'plateau'. "
+                        "Falling back to 'last-1'."
+                    )
+                    save_which_checkpoints = 'last-1'
+            
+            elif _save_policy in ClassificationMixin.SCALAR_SCORES:
+                self.target_score = _save_policy
+            
+            else:
+                warnings.warn(
+                    f"Save policy '{_save_policy}' is invalid. Falling back to 'last-1'."
+                )
+                save_which_checkpoints = 'last-1'
+
+        return save_which_checkpoints
 
     def train(self):
-        '''
-        Runs training (and optionally validation) epochs for all folds of the experiment.
-        '''
+
         self.save_config(os.path.join(self.results_dir, 'pathobench_config.json'))
         self.train_results_dir = self.results_dir 
         self.durations = {}
@@ -145,18 +138,23 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             self.loggers = self.init_loggers(save_dir = os.path.join(self.results_dir, 'training_metrics', f'fold_{self.current_fold}'))
 
             ### Initialize train and val dataloaders
-            self.dataloaders = {mode: self.dataset.get_dataloader(self.current_fold, mode, batch_size=self.device_batch_size) for mode in ['train', 'val']}
+            self.dataloaders = {mode: self.dataset.get_dataloader(self.current_fold, mode, batch_size=self.device_batch_size, seed = self.seed) for mode in ['train', 'val']}
+            self.num_phisical_batches_train = len(self.dataloaders['train'])
+            self.num_batches_train = math.ceil(self.num_phisical_batches_train / self.gradient_accumulation)
+
+            self.num_phisical_batches_val = len(self.dataloaders['val'])
+            self.num_batches_val = math.ceil(self.num_phisical_batches_val / self.gradient_accumulation)
             
-            ### Initialize model
-            self.model = self.model_constructor(**self.classifier_args, device = self.device)
+            ### Initialize model (type: TrainableSlideEncoder)
+            self.model = self.model_constructor(**self.model_kwargs, device = self.device)
             self.save_model_architecture(self.model, os.path.join(self.results_dir, f'model.txt'))
             
             ### Initialize optimizer and scheduler
             self.optimizer = self._init_optimizer()
             self.scheduler = self._init_scheduler()
 
-            self.global_opt_steps = 0  # Total number of optimization steps
-            self.ga_scaling_factors = set()
+            self.global_opt_steps = 0 
+            self._monitor_scaling_factors_ga = set() if self.gradient_accumulation > 1 else {1}
 
             ### Prepare grad scaler
             # Only use GradScaler for FP16 training. bfloat16 does not require GradScaler: https://discuss.pytorch.org/t/bfloat16-training-explicit-cast-vs-autocast/202618/8
@@ -203,7 +201,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                 epoch_loss = {'train' : None, 'val' : None }
                 new_best_loss = {'train' : None, 'val' : None}
                 new_best_target = {'train' : None, 'val' : None}
-                total_duration = {'train': 0, 'val': 0 }
+                total_duration = {'train': 0, 'val': 0}
 
                 for self.mode in ['train', 'val']:
                 # ON BOTH SPLITS OF THIS DEVELOPMENT FOLDER
@@ -292,10 +290,6 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
         )
 
     def _eval_single_fold(self, fold_idx: int):
-        """
-        Evaluate the model on a single fold for the given split ('val' or 'test').
-        Computes and saves per-fold metrics.
-        """
 
         # Carica dataloader del fold
         eval_dataloader = self.dataloaders.get('val')
@@ -314,7 +308,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
 
         # Load e freeze modello
         try:
-            model = self.model_constructor(**self.classifier_args, device=self.device)
+            model = self.model_constructor(**self.model_kwargs, device=self.device)
             model = self.load_checkpoint(model, ckpt_path)
             model = self.freeze(model)
         except Exception as e:
@@ -342,10 +336,6 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
         self._eval(split='test')
 
     def validate(self):
-        """
-        Aggregate validation metrics across all folds and produce a summary with
-        mean, std, SE, and a nicely formatted string, exactly like in _eval.
-        """
         all_scores_across_folds = []
 
         for fold_idx in range(self.dataset.num_folds):
@@ -398,7 +388,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
         loop = tqdm(range(self.dataset.num_folds))
         for self.current_fold in loop:
             ### Load the dataloader for this fold
-            eval_dataloader = self.dataset.get_dataloader(self.current_fold, split, batch_size=1)
+            eval_dataloader = self.dataset.get_dataloader(self.current_fold, split, batch_size=1, seed = self.seed)
             if eval_dataloader is None:
                 return
             loop.set_description(f'Running {split} split on {len(eval_dataloader.dataset)} samples')
@@ -413,7 +403,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
 
             ### Load the model and freeze it
             try:
-                model = self.model_constructor(**self.classifier_args, device=self.device)
+                model = self.model_constructor(**self.model_kwargs, device=self.device)
                 model = self.load_checkpoint(model, ckpt_path)
                 model = self.freeze(model)
             except Exception as e:
@@ -442,10 +432,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             json.dump(summary, f, indent=4)
             
     def _accumulate_preds(self, dataloader, model):
-        """
-        Forward pass across the entire dataloader to collect predictions 
-        and ground-truth labels, sample-wise.
-        """
+
         labels_all = []
         preds_all = []
         ids_all = []
@@ -472,7 +459,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                 if self.task_type == 'classification':
 
                     # labels: (B,)
-                    labels = batch['labels'][self.classifier_args['task_name']]
+                    labels = batch['labels'][self.model_kwargs['task_name']]
                     labels = labels.cpu().int().numpy()
 
                     # logits: (B, C)
@@ -489,11 +476,11 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                 elif self.task_type == 'survival':
 
                     events = batch['labels']['extra_attrs'][
-                        f'{self.classifier_args["task_name"]}_event'
+                        f'{self.model_kwargs["task_name"]}_event'
                     ].cpu().numpy()
 
                     times = batch['labels']['extra_attrs'][
-                        f'{self.classifier_args["task_name"]}_days'
+                        f'{self.model_kwargs["task_name"]}_days'
                     ].cpu().numpy()
 
                     logits = model(batch, output='logits')  # (B, *)
@@ -522,27 +509,20 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
         return labels_all, preds_all, ids_all
     
     def _compute_metrics(self, labels, preds, save_dir = None, ids=None):  # MV ids added
-        """
-        Save metrics to file and return a dictionary of metrics.
-        
-        Args:
-            labels (np.array or dict): Ground truth labels
-            preds (np.array): Predictions
-            save_dir (str): Directory to save metrics to
-        """
+
         if self.task_type == 'classification':
-            self.auc_roc(labels, preds, self.classifier_args['num_classes'], 
+            self.auc_roc(labels, preds, self.model_kwargs['num_classes'], 
                         saveto=os.path.join(save_dir, "roc_curves.png") if save_dir is not None else save_dir,
-                        label_dict=self.classifier_args['label_dict'],color_map = self.color_map)
-            self.precision_recall(labels, preds, self.classifier_args['num_classes'], 
+                        label_dict=self.model_kwargs['label_dict'], color_map = self.color_map)
+            self.precision_recall(labels, preds, self.model_kwargs['num_classes'], 
                                 saveto=os.path.join(save_dir, "pr_curves.png") if save_dir is not None else save_dir,
-                                label_dict=self.classifier_args['label_dict'],color_map = self.color_map)
-            self.confusion_matrix(labels, preds, self.classifier_args['num_classes'], 
+                                label_dict=self.model_kwargs['label_dict'],color_map = self.color_map)
+            self.confusion_matrix(labels, preds, self.model_kwargs['num_classes'], 
                                 saveto=os.path.join(save_dir, "confusion_matrix.png") if save_dir is not None else save_dir,
-                                label_dict=self.classifier_args['label_dict'])
-            scores = self.classification_metrics(labels, preds, self.classifier_args['num_classes'], 
+                                label_dict=self.model_kwargs['label_dict'])
+            scores = self.classification_metrics(labels, preds, self.model_kwargs['num_classes'], 
                                                 saveto=os.path.join(save_dir, "metrics.json") if save_dir is not None else save_dir,
-                                                label_dict=self.classifier_args['label_dict'])
+                                                label_dict=self.model_kwargs['label_dict'])
             if save_dir is not None:
                 np.savez_compressed(  # MV ADDED: Save labels and preds and ids together as a single .npz file
                     os.path.join(save_dir, "labels_preds.npz"),
@@ -571,23 +551,12 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             return scores
 
     def _finalize_metrics(self, split, labels_across_folds, preds_across_folds, scores_across_folds):
-        """
-        Combine per-fold results or do bootstrapping if single fold
-        
-        Arguments:
-            split (str): Split name ('val' or 'test')
-            labels_across_folds (list): List of labels across folds
-            preds_across_folds (list): List of predictions across folds
-            scores_across_folds (list): List of scores across folds
-            
-        Returns:    
-            summary (dict): Dictionary of summary metrics
-        """
+
         if len(labels_across_folds) > 0:
             # Perform bootstrapping and calculate 95% CI (# They do?)
             bootstraps = self.bootstrap(labels_across_folds, preds_across_folds, self.num_bootstraps)
             if self.task_type == 'classification':
-                scores_across_folds = [self.classification_metrics(labels, preds, self.classifier_args['num_classes'])['overall'] for labels, preds in tqdm(bootstraps, desc=f'Computing {self.num_bootstraps} bootstraps')]
+                scores_across_folds = [self.classification_metrics(labels, preds, self.model_kwargs['num_classes'])['overall'] for labels, preds in tqdm(bootstraps, desc=f'Computing {self.num_bootstraps} bootstraps')]
             elif self.task_type == 'survival':
                 scores_across_folds = [self.survival_metrics(labels['survival_event'], labels['survival_time'], preds) for labels, preds in tqdm(bootstraps, desc=f'Computing {self.num_bootstraps} bootstraps')]
             
@@ -608,9 +577,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             return self.get_mean_se(scores_across_folds)
 
     def _pick_checkpoint(self, checkpoint_dir):
-        """
-        Picks the latest checkpoint from a directory. Returns None if no checkpoints are found.
-        """
+
         if not os.path.exists(checkpoint_dir):
             raise FileNotFoundError(f"No checkpoints found in {checkpoint_dir}")
         
@@ -627,10 +594,6 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             return os.path.join(checkpoint_dir, available_checkpoints[0])
     
     def _run_single_epoch(self):
-        
-        """
-        Runs a single training or validation epoch. After the epoch, the epoch metrics are stored in self.current_epoch_metrics.
-        """
         
         # Set models to appropriate mode
         if self.mode == 'train':
@@ -669,10 +632,10 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
 
                 if self.mode == 'train':
                     is_last_batch = (batch_idx + 1 == total_batches)
-                    scale = self._compute_accumulation_scale(batch_idx)
+                    scale = self._compute_accumulation_scale(batch_idx) if self.gradient_accumulation > 1 else 1
                     self.grad_scaler.scale(loss / scale).backward()
 
-                    if (batch_idx + 1) % self.accumulation_steps == 0 or is_last_batch:
+                    if (batch_idx + 1) % self.gradient_accumulation == 0 or is_last_batch:
                         self.grad_scaler.step(self.optimizer)
                         current_scale = self.grad_scaler.get_scale()
                         self.grad_scaler.update()
@@ -834,30 +797,24 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             return
         
     def _compute_accumulation_scale(self, batch_idx : int):
-            """
-            Computes the normalization factor for the current micro-batch loss.
-            """
+
             # 1. Identify the current accumulation block (e.g., 0-3 : 0, 4-7 : 4 for accumulation_steps = 4)
-            current_block_start = (batch_idx // self.accumulation_steps) * self.accumulation_steps
+            current_block_start = (batch_idx // self.gradient_accumulation) * self.gradient_accumulation
             
             # 2. Determine the end of the current block
             # It's either the full accumulation step or the end of the dataset
             total_batches = len(self.dataloaders[self.mode])
-            current_block_end = min(total_batches, current_block_start + self.accumulation_steps)
+            current_block_end = min(total_batches, current_block_start + self.gradient_accumulation)
             
             # 3. The true scale is the actual number of steps in this specific block
             update_window_length = current_block_end - current_block_start
 
             # Tracks different scales used, main for debugging purposes
-            self.ga_scaling_factors.add(update_window_length)
+            self._monitor_scaling_factors_ga.add(update_window_length)
             
             return update_window_length
     
     def _init_scheduler(self):
-        
-        '''
-        Returns a scheduler. Supports one of the built-in schedulers or a custom scheduler class.
-        '''
         
         if isinstance(self.scheduler_config['type'], str):
             # Using built-in scheduler
@@ -875,6 +832,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                     patience=self.scheduler_config['patience'],
                     threshold = self.scheduler_config['threshold']
                     )
+            
             elif self.scheduler_config['type'] == 'step':
                 return torch.optim.lr_scheduler.MultiStepLR(
                     self.optimizer,
@@ -882,31 +840,43 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                     gamma=self.scheduler_config['gamma']
                 )
             elif self.scheduler_config['type'] == 'cosine':
-                num_batches = len(self.dataloaders['train'])
-                steps_per_epoch = math.ceil(num_batches / self.accumulation_steps)
                 total_optimizer_steps = (
                     self.num_epochs
                     if self.scheduler_config['step_on'] == 'epoch'
-                    else steps_per_epoch * self.num_epochs
+                    else self.num_batches_train * self.num_epochs
                 )
                 return torch.optim.lr_scheduler.CosineAnnealingLR(
                     self.optimizer,
                     T_max=total_optimizer_steps,
                     eta_min=self.scheduler_config['eta_min']
                 )
+            
             elif self.scheduler_config['type'] == 'cosine_warm_restart':
                 return torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
                     self.optimizer,
                     T_0=self.scheduler_config['T_0'],
                     T_mult=self.scheduler_config['T_mult'],
                     eta_min=self.scheduler_config['eta_min'])
+            
+            elif self.scheduler_config['type'] == 'exp':
+                return torch.optim.lr_scheduler.ExponentialLR(
+                    optimizer=self.optimizer,
+                    gamma=self.scheduler_config['gamma']
+                )
+            
+            elif self.scheduler_config['type'] == 'linear':
+                return torch.optim.lr_scheduler.LinearLR(
+                    optimizer = self.optimizer,
+                    start_factor=self.optimizer     
+                )
+            
             elif self.scheduler_config['type'] == 'gigapath':
                 from patho_bench.optim.GigaPathOptim import CustomLRScheduler
                 try: 
                     default_scheduler_args = {
                         'base_lr': self.optimizer_config['base_lr'],
                         'max_epochs': self.num_epochs,
-                        'accumulation_steps': self.accumulation_steps,
+                        'accumulation_steps': self.gradient_accumulation,
                         'len_dataloader': len(self.dataloaders['train']),
                     }
                     return CustomLRScheduler(
@@ -925,7 +895,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                 default_scheduler_args = {
                     'base_lr': self.optimizer_config['base_lr'],
                     'max_epochs': self.num_epochs,
-                    'accumulation_steps': self.accumulation_steps,
+                    'accumulation_steps': self.gradient_accumulation,
                     'len_dataloader': len(self.dataloaders['train']),
                 }
 
@@ -940,9 +910,6 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             raise ValueError(f"Scheduler type must be a string or a callable, got {self.scheduler_config['type']} instead.")
 
     def _init_optimizer(self):
-        '''
-        Initialize optimizer.
-        '''
         optimizer_type = self.optimizer_config['type']
         extra_kwargs = {k: v for k, v in self.optimizer_config.items() if k not in ['type', 'get_param_groups', 'param_group_args', 'base_lr']}
 
@@ -1016,7 +983,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
 
             info['Index'] = device_idx
             info['Name'] = props.name
-            info['VRAM (GB)'] = props.total_memory / (1024 ** 3)
+            info['VRAM (GB)'] = f"{props.total_memory / (1024 ** 3):.2f}"
             info['MultiProcessor Count'] = props.multi_processor_count
         else:
             info['Index'] = "N/A"
@@ -1066,7 +1033,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                 ("Number of Folds", self.dataset.num_folds),
                 ("Epochs", self.num_epochs),
                 ("(Phisical) Batch Size", self.device_batch_size),
-                ("Gradient Accumulation Steps", self.accumulation_steps),
+                ("Gradient Accumulation Steps", self.gradient_accumulation),
                 ("Batch Size", self._batch_size),
                 ("Precision", self.precision),
                 ("Seed", self.seed),
@@ -1085,7 +1052,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                 self._print_kv(k, v)
 
             self._print_section("MODEL INFO", width_total)
-            for k, v in self.classifier_args.items():
+            for k, v in self.model_kwargs.items():
                 if isinstance(v, torch.nn.Module):
                     v = f"See model in {os.path.join(self.results_dir, 'model.txt')}"
                 self._print_kv(k, v)
@@ -1110,8 +1077,8 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             self._print_section("EXPERIMENT DURATION (HH:MM:SS)", width_total)
             print(f"Train:      {self._fmt_duration(total_train)}")
             print(f"Validation: {self._fmt_duration(total_val)}")
-            print(f"Overall:    {self._fmt_duration(total_overall)}\n")
-
+            print(f"Overall:    {self._fmt_duration(total_overall)}")
+            print("-" * width_total)
             self._print_section(f"VALIDATION SUMMARY (Bootstraps {self.num_bootstraps})", width_total)
             headers = ["Metric", "Mean ± Std"]
             rows = [[metric, vals["formatted"]] for metric, vals in validation_summary.items()]
@@ -1145,7 +1112,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                 ["Physical Batches", self.num_phisical_batches_train, self.num_phisical_batches_val],
                 ["Batches", self.num_batches_train, self.num_batches_val]
             ]
-            col_widths = [35, 8, 8]
+            col_widths = [20, 8, 8]
 
             self._print_table(headers, rows, col_widths, width=width_total)
 
@@ -1165,14 +1132,13 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             print("#" * width_total)
 
             self._print_section("DURATION", width_total)
-
             # Tabella con le prime due righe
             headers = ["Value", "Train | Valid"]
             rows = [
                 ["Total ", f"{self._fmt_duration(total_train_time)} | {self._fmt_duration(total_val_time)}"],
                 ["Average ", f"{self._fmt_duration(avg_train)} | {self._fmt_duration(avg_val)}"]
             ]
-            col_widths = [50, 65]  # larghezza colonne, adatta al width_total
+            col_widths = [20, 20]  # larghezza colonne, adatta al width_total
 
             self._print_table(headers, rows, col_widths, width=width_total)
 
@@ -1181,19 +1147,18 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                 "Total duration (train + valid): ",
                 self._fmt_duration(total_time)
             )
-
             self._print_section("EPOCH SUMMARY", width_total)
             self._print_kv(
-                "Training Epochs (actual / planned)",
+                "Training Epochs",
                 f"{self.fold_training_epochs} / {self.num_epochs}"
             )
             self._print_kv(
-                "Total Optimization Steps",
-                f"{self.global_opt_steps} / {self.num_batches_train}"
+                "Optimization Steps",
+                f"{self.global_opt_steps} / {self.num_batches_train * self.fold_training_epochs}"
             )
             self._print_kv(
                 "Accumulation Scaling Employed",
-                self.ga_scaling_factors
+                self._monitor_scaling_factors_ga
             )
 
             if self.target_score and validation_scores:
@@ -1219,7 +1184,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
 
         # funzione per costruire una riga
         def _row(items):
-            cells = [f"{str(item):<{w}}" for item, w in zip(items, col_widths)]
+            cells = [f"{str(item):^{w}}" for item, w in zip(items, col_widths)]
             return pad + "|" + "|".join(cells) + "|"
 
         # linee superiori / inferiori

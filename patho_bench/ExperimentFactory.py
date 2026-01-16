@@ -4,18 +4,14 @@ import numpy as np
 import torch
 from pathlib import Path
 from torch import nn
-from patho_bench.experiments.LinearProbeExperiment import LinearProbeExperiment
-from patho_bench.experiments.RetrievalExperiment import RetrievalExperiment
-from patho_bench.experiments.CoxNetExperiment import CoxNetExperiment
 from patho_bench.experiments.FinetuningExperiment import FinetuningExperiment
 from patho_bench.experiments.GeneralizabilityExperimentWrapper import GeneralizabilityExperimentWrapper
 from patho_bench.TrainableSlideEncoder import (
     DefaultTrainableSlideEncoder, 
     im4MECTrainableSlideClassifier, 
-    FeatherTrainableSlideClassifier,
+    ABMIL_MILLAB_TrainableSlideClassifier,
     CLAMTrainableSlideClassifier
 )
-
 from patho_bench.SplitFactory import SplitFactory
 from patho_bench.DatasetFactory import DatasetFactory
 from patho_bench.helpers.GPUManager import GPUManager
@@ -26,10 +22,7 @@ import warnings
 import json
 from millab.builder import create_model
 
-
-"""
-This file contains the ExperimentFactory class which is responsible for instantiating the appropriate experiment object.
-"""
+import textwrap
 
 COMBINE_TRAIN_VAL = False
 TEST_EXTERNAL_ONLY = True
@@ -42,14 +35,12 @@ class ExperimentFactory:
                  patch_embeddings_dirs: list[str],
                  saveto: str,
                  combine_slides_per_patient: bool,
-                 model_name: str,
                  bag_size,
-                 base_learning_rate,
                  gradient_accumulation,
                  num_epochs,
                  balanced: bool,
                  save_which_checkpoints: str,
-                 model_kwargs: dict = {},
+                 model_args: dict = {},
                  precision : str = None,
                  gpu : int = -1,
                  device_batch_size : int = 1, 
@@ -79,7 +70,8 @@ class ExperimentFactory:
             )
             device_batch_size = kwargs['batch_size']
 
-        ###### Get dataset ################################################################
+        base_learning_rate = model_args.pop('lr', 1e-3)
+
         split, task_info, internal_dataset = ExperimentFactory._prepare_internal_dataset(
             split_path=split,
             task_config=task_config,
@@ -99,8 +91,7 @@ class ExperimentFactory:
         )
         
         model_constructor, classifier_args = configure_model(
-            model_name,
-            model_kwargs,
+            model_args,
             loss,
             task_info
         )
@@ -118,7 +109,7 @@ class ExperimentFactory:
             with open(color_map,"r") as fp:
                 color_map = json.load(fp)
 
-        ###### Configure experiment ################################################################
+        
         experiment = FinetuningExperiment(
             task_type = task_info['task_type'],
             dataset = internal_dataset,
@@ -126,7 +117,7 @@ class ExperimentFactory:
             model_constructor = model_constructor,
             classifier_args = classifier_args,
             num_epochs = num_epochs,
-            accumulation_steps = gradient_accumulation,
+            gradient_accumulation = gradient_accumulation,
             optimizer_config = optimizer_config,
             scheduler_config = scheduler_config,
             save_which_checkpoints = save_which_checkpoints,
@@ -169,7 +160,6 @@ class ExperimentFactory:
               combine_slides_per_patient: bool,
               sweep_over: dict[list],
               gpu: int = -1,
-              model_name: str = None,
               external_split: str = None,
               external_saveto: str = None,
               num_bootstraps: int = 100,
@@ -189,7 +179,6 @@ class ExperimentFactory:
         args = {
             'combine_slides_per_patient': combine_slides_per_patient,
             'gpu': gpu,
-            'model_name': model_name,
             'view_progress' : view_progress,
             'external_split': external_split,
             'external_saveto': external_saveto,
@@ -226,13 +215,19 @@ class ExperimentFactory:
 
             hyperparams['balanced'] = dataset_cfg['balance_loss']
 
+            # Unpacking batch size
+            batch_size = hyperparams.pop('batch_size')
+            if batch_size is not None:
+                hyperparams['device_batch_size'] = batch_size['device_batch_size']
+                hyperparams['gradient_accumulation'] = batch_size['gradient_accumulation']
+
             # Start fine tuning
             if args['saveto'] is not None:
                 if experiment_type == 'finetune':
                     experiment = ExperimentFactory.finetune(**args, **hyperparams)
                 else: 
                     raise NotImplementedError(
-                        f'Experiment type {experiment_type} not recognized. Please choose from "finetune", "linprobe", "retrieval", or "coxnet".'
+                        f'Experiment type {experiment_type} not recognized.'
                     )
             
                 experiments_list.append(experiment.train())
@@ -324,7 +319,7 @@ class ExperimentFactory:
     def _get_model_constructor(model_name : str):
         if "millab" in model_name:
             if "abmil" in model_name:
-                return FeatherTrainableSlideClassifier
+                return ABMIL_MILLAB_TrainableSlideClassifier
             if "clam" in model_name:
                 return CLAMTrainableSlideClassifier
         elif model_name == 'im4MEC':
@@ -332,16 +327,16 @@ class ExperimentFactory:
         else :
             return DefaultTrainableSlideEncoder
 
-############################################################################################################
-# Some helper functions
-
-def configure_model(model_name : str, model_kwargs : dict, loss, task_info : dict):
+def configure_model(model_args : dict, loss, task_info : dict):
     
+    model_name = model_args['model_name']
+
     model_constructor = ExperimentFactory._get_model_constructor(model_name)
     model_name_cleaned = model_name.replace("millab:", "")
     num_classes = len(task_info['label_dict'])
 
-    if model_constructor is FeatherTrainableSlideClassifier:
+    if model_constructor is ABMIL_MILLAB_TrainableSlideClassifier:
+        
         slide_classifier = create_model(model_name_cleaned, from_pretrained=True, num_classes=num_classes)
 
         classifier_args = {
@@ -351,15 +346,14 @@ def configure_model(model_name : str, model_kwargs : dict, loss, task_info : dic
             'num_classes': num_classes,
             'loss': loss,
             'label_dict' : task_info['label_dict'],
-            **model_kwargs
+            **model_args
         }
     
     else : 
-        slide_encoder = encoder_factory(
-            model_name_cleaned, 
+        slide_encoder = encoder_factory( 
             pretrained = False, 
             freeze=False, 
-            **model_kwargs
+            **model_args
         )
 
         classifier_args = {
@@ -369,20 +363,13 @@ def configure_model(model_name : str, model_kwargs : dict, loss, task_info : dic
             'num_classes': num_classes,
             'loss': loss,
             'label_dict' : task_info['label_dict'],
+            **model_args
         }
 
     return model_constructor, classifier_args
         
 def parse_task_code(task_code):
-    '''
-    Parse task code into data source and task name.
-    
-    Args:
-        task_code: str, in the format "data_source--task_name"
-    
-    Returns:
-        str, str, str: train_source, test_source, task_name
-    '''
+
     data_source, task_name = task_code.split('--')
     if '==' in data_source:
         train_source, test_source = data_source.split('==') # If running generalizability experiment, load split for internal dataset only
@@ -393,28 +380,9 @@ def parse_task_code(task_code):
         return train_source, None, task_name
     
 def generate_exp_id(hyperparams):
-    '''
-    Generate a unique experiment ID from a dictionary of hyperparameters.
-    
-    Args:
-        hyperparams: dict, hyperparameters
-    
-    Returns:
-        str: experiment ID
-    '''
     return '_'.join(sorted([f'{k}={v}' for k, v in hyperparams.items()]))
     
 def generate_arg_combinations(variables):
-    """
-    Given a dict of lists, generate a list of dicts with all possible combinations of the input lists.
-    Example: {"blr": [0.01, 0.1], "wd": [0.001, 0.01]} -> [{"blr": 0.01, "wd": 0.001}, {"blr": 0.01, "wd": 0.01}, {"blr": 0.1, "wd": 0.001}, {"blr": 0.1, "wd": 0.01}]
-    
-    Parameters:
-    - variables (dict[list]): A dictionary where the keys are the variable names and the values are lists of values.
-    
-    Returns:
-    - list[dict]: A list of dictionaries, each representing a combination of the input variables.
-    """
     from itertools import product
     # If cost = 'auto', then automatically sweep over a range of costs (intended for linprobe)
     if 'auto' in make_list(variables.get('COST')):
@@ -425,9 +393,6 @@ def generate_arg_combinations(variables):
     return [dict(zip(variables.keys(), combination)) for combination in product(*variables.values())]
         
 def make_list(x):
-    '''
-    Convert input to list if it is not already a list.
-    '''
     return x if isinstance(x, list) else [x]
 
 def configure_loss(
@@ -530,10 +495,6 @@ def configure_optimizer(
     return optimizer_config
 
 def deep_dict_exact_equal(d1, d2):
-    """
-    Confronta due dizionari annidati esattamente.
-    Restituisce True solo se chiavi e valori coincidono, inclusi sottodizionari.
-    """
     if type(d1) != type(d2):
         return False
     
@@ -554,7 +515,6 @@ def deep_dict_exact_equal(d1, d2):
         return d1 == d2 
     
 def setup_folder_configs(saveto_root,id,hyperparams):
-
     # Directory per questa configurazione
     this_config_path = os.path.join(saveto_root, str(id))
 
@@ -600,7 +560,6 @@ def _sweep_section(title: str, width: int = 140):
     print("-" * width)
 
 def _sweep_welcome(sweep_over: dict, width: int = 140):
-
     # Header principale
     print("\n" + "=" * width)
     print(f"{'WELCOME TO SWEEP MODE':^{width}}")
@@ -624,11 +583,20 @@ def _sweep_welcome(sweep_over: dict, width: int = 140):
     print(f"{'SWEEP CONFIGURATION':^{width}}")
     print("-" * width)
 
-    print("Sweep parameters:")
+    # Stampa ogni chiave e i valori puntati
     for k in sweep_keys:
-        print(f"  - {k}")
+        print(f"{k}:")
+        for v in sweep_over[k]:
+            # indent e bullet
+            value_str = str(v)
+            # wrap se troppo lungo
+            wrapped = textwrap.wrap(value_str, width=width-6)
+            for i, line in enumerate(wrapped):
+                prefix = "    - " if i == 0 else "      "
+                print(prefix + line)
+        print()  # linea vuota tra chiavi
 
-    print(f"\nTotal configurations to run: {num_configs}")
+    print(f"Total configurations to run: {num_configs}")
 
     print("\n" + "=" * width + "\n")
 

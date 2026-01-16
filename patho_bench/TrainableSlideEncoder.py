@@ -17,7 +17,8 @@ class DefaultTrainableSlideEncoder(nn.Module):
                  num_classes,
                  loss,
                  device,
-                 label_dict):
+                 label_dict,
+                 **kwargs):
         '''
         Initializes a trainable classifier using a preloaded slide encoder.
 
@@ -98,17 +99,17 @@ class im4MECTrainableSlideClassifier(nn.Module):
     Output: B x n_classes
     """
 
-    def __init__(self, slide_encoder, post_pooling_dim, task_name, num_classes, loss, device, label_dict):
-        """
-        Args:
-            slide_encoder (nn.Module): il pooler multibranch
-            post_pooling_dim (int): hidden_dim dei branch
-            task_name (str): nome del task
-            num_classes (int): numero di classi target
-            loss (nn.Module o dict): CrossEntropyLoss (bilanciata o no)
-            device (str o torch.device)
-            label_dict (dict): opzionale, come in TrainableSlideEncoder
-        """
+    def __init__(
+            self, 
+            slide_encoder, 
+            post_pooling_dim, 
+            task_name,
+            num_classes,
+            loss, 
+            device, 
+            label_dict,
+            **kwargs
+        ):
         super().__init__()
         self.slide_encoder = copy.deepcopy(slide_encoder)
         self.post_pooling_dim = post_pooling_dim
@@ -175,7 +176,7 @@ class im4MECTrainableSlideClassifier(nn.Module):
         else:
             raise NotImplementedError(f"Output mode {output} non implementato")
 
-class FeatherTrainableSlideClassifier(nn.Module):
+class ABMIL_MILLAB_TrainableSlideClassifier(nn.Module):
     """
     Wrapper per modelli MIL-Lab (es. ABMIL) compatibile con FinetuningExperiment.
     """
@@ -192,13 +193,13 @@ class FeatherTrainableSlideClassifier(nn.Module):
         dropout : float,
         freeze_backbone: bool = False,
         debug : bool = False,
+        **kwargs
     ):
         super().__init__()
 
         self.slide_classifier = copy.deepcopy(slide_classifier) # Deep copy to avoid to modify original model while cross-validating.
         set_dropout(self.slide_classifier, dropout)
-        print(f"CLASSIFIER's architecture= {self.slide_classifier}")
-
+        
         self.post_pooling_dim = post_pooling_dim
         self.task_name = task_name
         self.num_classes = num_classes
@@ -314,6 +315,7 @@ class CLAMTrainableSlideClassifier(nn.Module):
         label_dict: dict,
         device,
         freeze_backbone: bool = False,
+        **kwargs,
     ):
         super().__init__()
 

@@ -220,7 +220,7 @@ class BaseDataset(torch.utils.data.Dataset, ConfigMixin):
         else:
             raise NotImplementedError(f'Sampler type {sampler} not implemented')
         
-    def get_dataloader(self, current_iter, fold, batch_size=None, num_workers=4):
+    def get_dataloader(self, current_iter, fold, batch_size=None, num_workers=4, seed = None):
         '''
         Returns a dataloader for the dataset.
         
@@ -239,10 +239,10 @@ class BaseDataset(torch.utils.data.Dataset, ConfigMixin):
         if subset_dataset is None:
             return None
 
-
         g = torch.Generator()
-        g.manual_seed(42)
 
+        if seed is not None:
+            g.manual_seed(seed)
 
         return torch.utils.data.DataLoader(
             subset_dataset,
@@ -253,7 +253,7 @@ class BaseDataset(torch.utils.data.Dataset, ConfigMixin):
             pin_memory=True,
             persistent_workers=True,
             generator=g, 
-            worker_init_fn=seed_worker
+            worker_init_fn=seed_worker if seed is not None else None
         )
 
 def seed_worker(worker_id):

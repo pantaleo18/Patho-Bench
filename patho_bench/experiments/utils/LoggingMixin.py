@@ -33,7 +33,6 @@ class LoggingMixin:
         "precision",
         "recall",
         "f1",
-        "support",
         "acc",
         "bacc",
         "weighted_kappa",

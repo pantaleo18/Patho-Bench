@@ -1,8 +1,20 @@
 {
     "cosine": {
         "type": "cosine",
-        "eta_min": 1e-6,
-        "step_on": "model_update"
+        "eta_min": 0.0,
+        "step_on": "epoch"
+    },
+    "cosine_warm_restart" : {
+        "type" : "cosine_warm_restart",
+        "T_0" : 5,
+        "T_mult" : 1,
+        "eta_min": 0.0,
+        "step_on": "epoch"
+    },
+    "exp" : {
+        "type" : "exp",
+        "gamma" : 0.95,
+        "step_on" : "epoch"
     },
     "step": {
         "type": "step",
@@ -16,13 +28,13 @@
         "factor": 0.1,
         "patience": 0,
         "threshold": 1e-6,
-        "step_on": "val",
-        "min_lr": 1e-6
+        "min_lr": 1e-8,
+        "step_on": "val"
     },
     "gigapath": {
         "type": "gigapath",
         "warmup_epochs": 1,
-        "min_lr": 1e-6,
+        "min_lr": 1e-8,
         "step_on": "model_update"
     }
 }

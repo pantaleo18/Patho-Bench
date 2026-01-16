@@ -27,30 +27,57 @@ class ClassificationMixin:
     ]
 
     def auc_roc(self, y_true, preds, num_classes, saveto=None, label_dict=None, color_map=None):
-        y_true_bin = self.binarize_labels(y_true, num_classes)
+        import numpy as np
+        from sklearn.metrics import roc_curve, roc_auc_score
+        import matplotlib.pyplot as plt
 
+        y_true_bin = self.binarize_labels(y_true, num_classes)
         colors = self._resolve_color_map(color_map, num_classes, label_dict)
 
         fig, ax = plt.subplots(figsize=(10, 10))
-        auc_scores = roc_auc_score(y_true_bin, preds, average=None, multi_class='ovr')
 
+        # Calcolo AUC OVR per ciascuna classe
+        auc_scores = roc_auc_score(y_true_bin, preds, average=None, multi_class='ovr')
+        # Calcolo macro AUC
+        auc_macro = roc_auc_score(y_true_bin, preds, average='macro', multi_class='ovr')
+
+        # Preparazione per curva media
+        all_fpr = np.linspace(0, 1, 100)
+        tprs_interp = []
+
+        # Plot delle curve di ciascuna classe
         for j in range(num_classes):
             fpr, tpr, _ = roc_curve(y_true_bin[:, j], preds[:, j])
             label_name = label_dict[j] if label_dict else str(j)
-            ax.plot(fpr, tpr, 
-                    label=f"{label_name} (OVR AUC={auc_scores[j]:.2f})",
-                    color=colors[j])
+            ax.plot(fpr, tpr, label=f"{label_name} (OVR AUC={auc_scores[j]:.2f})", color=colors[j])
+
+            # Interpolazione per la curva media
+            tprs_interp.append(np.interp(all_fpr, fpr, tpr))
+
+        # Calcolo e plot della curva media
+        mean_tpr = np.mean(tprs_interp, axis=0)
+        ax.plot(all_fpr, mean_tpr, color='k', linewidth=2.5, label=f"Mean ROC")
+        
+        # Linea diagonale casuale
+        ax.plot([0, 1], [0, 1], linestyle="--", color="gray", linewidth=1, label="Random")
 
         # Styling
-        ax.plot([0, 1], [0, 1], linestyle="--", color="k", linewidth=0.8)
-        ax.set_xlabel("False Positive Rate", fontsize=14)
-        ax.set_ylabel("True Positive Rate", fontsize=14)
+        ax.set_xlabel("False Positive Rate", fontsize=20)
+        ax.set_ylabel("True Positive Rate", fontsize=20)
         ax.set_title(f"ROC Curve ({num_classes} classes)", fontsize=16, pad=20)
-        ax.legend(loc="lower right", frameon=False, fontsize=12)
+        
+        # Macro AUC solo nella legenda
+        handles, labels = ax.get_legend_handles_labels()
+        labels.append(f"Macro OVR AUC={auc_macro:.2f}")
+        handles.append(plt.Line2D([0], [0], color='k', linewidth=0))  # invisibile, serve solo per la legenda
+        ax.legend(handles=handles, labels=labels, loc="lower right", frameon=False, fontsize=20)
+
         fig.tight_layout()
+
         if saveto is not None:
+            import os
             os.makedirs(os.path.dirname(saveto), exist_ok=True)
-            fig.savefig(saveto)
+            fig.savefig(saveto, dpi=300)
         plt.close()
 
     def precision_recall(self, y_true, preds, num_classes, saveto=None, label_dict=None, color_map=None):
@@ -100,29 +127,51 @@ class ClassificationMixin:
         """
         y_pred = self.get_predicted_labels(preds, threshold)
 
+        # Figura più grande
         fig_cm, ax_cm = plt.subplots(figsize=(10, 10))
 
         matrix = confusion_matrix(y_true, y_pred, labels=list(range(num_classes)))
-        sns.heatmap(matrix, annot=True, fmt="g", cmap="Blues", ax=ax_cm)
 
-        # Determina le etichette da mostrare sugli assi
+        sns.heatmap(
+            matrix,
+            annot=True,
+            fmt="g",
+            cmap="Blues",
+            ax=ax_cm,
+            annot_kws={"size": 20}  # numeri nei riquadri
+        )
+
+        # Etichette degli assi
         if label_dict is not None:
             tick_labels = [label_dict[i] for i in range(num_classes)]
         else:
             tick_labels = list(range(num_classes))
 
-        ax_cm.set_xlabel("Predicted label")
-        ax_cm.set_ylabel("True label")
-        ax_cm.set_xticklabels(tick_labels, rotation=45, ha='right')
-        ax_cm.set_yticklabels(tick_labels, rotation=0)
-        ax_cm.set_title(f"Confusion Matrix with T={threshold:.2f}" if threshold is not None else "Confusion Matrix")
+        # True labels: normali
+        ax_cm.set_yticklabels(tick_labels, rotation=0, fontsize=20)
+
+        # Predicted labels: aggiungi ^ sopra la testa usando il rendering matematico
+        predicted_labels = [rf"$\hat{{{label}}}$" for label in tick_labels]
+        ax_cm.set_xticklabels(predicted_labels, rotation=0, ha="right", fontsize=20)
+
+        ax_cm.set_xlabel("Predicted label", fontsize=14)
+        ax_cm.set_ylabel("True label", fontsize=14)
+
+        ax_cm.set_title(
+            f"Confusion Matrix with T={threshold:.2f}" if threshold is not None else "Confusion Matrix",
+            fontsize=16
+        )
+
         ax_cm.set_aspect("equal")
+
+        # Rimuove la colorbar
         ax_cm.collections[0].colorbar.remove()
 
         fig_cm.tight_layout()
+
         if saveto is not None:
             os.makedirs(os.path.dirname(saveto), exist_ok=True)
-            fig_cm.savefig(saveto)
+            fig_cm.savefig(saveto, dpi=300)
         plt.close()
 
     def classification_metrics(self, y_true, preds, num_classes, threshold=None, saveto=None, label_dict = None):
