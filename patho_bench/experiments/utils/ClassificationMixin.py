@@ -152,7 +152,7 @@ class ClassificationMixin:
 
         # Predicted labels: aggiungi ^ sopra la testa usando il rendering matematico
         predicted_labels = [rf"$\hat{{{label}}}$" for label in tick_labels]
-        ax_cm.set_xticklabels(predicted_labels, rotation=0, ha="right", fontsize=20)
+        ax_cm.set_xticklabels(predicted_labels, rotation=0, fontsize=20)
 
         ax_cm.set_xlabel("Predicted label", fontsize=14)
         ax_cm.set_ylabel("True label", fontsize=14)

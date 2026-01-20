@@ -21,6 +21,8 @@ from trident.slide_encoder_models.load import encoder_factory
 import warnings
 import json
 from millab.builder import create_model
+from itertools import product
+import copy
 
 import textwrap
 
@@ -55,7 +57,7 @@ class ExperimentFactory:
                  color_map : str | dict = None,
                  lr_logging_interval : int = 1,
                  early_stop : bool = False,
-                 early_stop_policy : str = "best-val-loss",
+                 early_stop_policy : str = "last-1",
                  patience : int = 3,
                  halt_training_on_folder_early_stop : bool = False,
                  **kwargs,
@@ -383,14 +385,29 @@ def generate_exp_id(hyperparams):
     return '_'.join(sorted([f'{k}={v}' for k, v in hyperparams.items()]))
     
 def generate_arg_combinations(variables):
-    from itertools import product
-    # If cost = 'auto', then automatically sweep over a range of costs (intended for linprobe)
+    """
+    Generate all combinations of hyperparameters as independent dictionaries.
+    All mutable values are deep-copied to avoid side-effects.
+    """
+    # Auto-expand COST if set to 'auto'
     if 'auto' in make_list(variables.get('COST')):
-        assert len(make_list(variables['COST'])) == 1, f'If setting cost to "auto", then only one cost value is allowed. Received {make_list(variables["COST"])}'
-        variables['cost'] = list(np.logspace(np.log10(10e-6), np.log10(10e5), num=45))
-        
-    variables = {k.lower(): make_list(v) for k, v in variables.items()} # Ensure all values are lists and convert keys are lowercase
-    return [dict(zip(variables.keys(), combination)) for combination in product(*variables.values())]
+        cost_list = list(np.logspace(np.log10(10e-6), np.log10(10e5), num=45))
+        variables['cost'] = cost_list
+        if len(make_list(variables['COST'])) != 1:
+            raise ValueError(
+                "If setting cost to 'auto', then only one cost value is allowed."
+            )
+
+    # Lowercase keys and ensure all values are lists
+    variables = {k.lower(): make_list(v) for k, v in variables.items()}
+
+    # Generate all combinations and deepcopy each value
+    combinations = []
+    for combo in product(*variables.values()):
+        combo_dict = {k: copy.deepcopy(v) for k, v in zip(variables.keys(), combo)}
+        combinations.append(combo_dict)
+
+    return combinations
         
 def make_list(x):
     return x if isinstance(x, list) else [x]

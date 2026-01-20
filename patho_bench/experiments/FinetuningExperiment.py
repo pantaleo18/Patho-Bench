@@ -52,7 +52,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                  disable_cudnn : bool = False,
                  color_map : dict = None,
                  early_stop : bool = False,
-                 early_stop_policy : str = "best-val-err",
+                 early_stop_policy : str = "last-1",
                  patience : int = 3,
                  halt_training_on_folder_early_stop : bool = False,
                  **kwargs):
@@ -103,6 +103,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             if _save_policy == "step_on":
                 if self.scheduler_config.get('type') == 'plateau':
                     self.target_score = self.scheduler_config.get('step_on')
+                    save_which_checkpoints = f"best-{self.target_score}"
                 else:
                     warnings.warn(
                         "'best-step_on' requested but the scheduler type is not 'plateau'. "
@@ -696,7 +697,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                 self.best_val_loss = avg_loss
                 new_best_loss = True
 
-            if self.target_score:
+            if self.target_score is not None and self.target_score != "val-loss":
                 self.log_target_score(self.current_epoch, scores[self.target_score])
                 if self._is_new_best_score(scores.get(self.target_score)):
                     self.best_target_score = scores[self.target_score]
@@ -751,7 +752,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                 f"'step_on' cannot be None when using plateau scheduler. Scheduler config: {self.scheduler_config}"
             )
 
-        if step_on == 'val':
+        if step_on == 'val-loss':
             metric = self.current_epoch_metrics.get('avg_loss')
             if metric is None:
                 raise RuntimeError(
@@ -818,35 +819,48 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             return update_window_length
     
     def _init_scheduler(self):
+        """
+        Crea lo scheduler principale e, se configurato, lo combina con un warmup.
+        Gestisce automaticamente la sottrazione dei passi/epoch del warmup.
+        """
+        warmup_cfg = self.scheduler_config.get('warmup', None)
+        warmup_scheduler = None
+        warmup_steps = 0
 
-        if 'warmup' in self.scheduler_config:
-            warmup_cfg = self.scheduler_config['warmup']
+        # Se c'è warmup, creo il LinearLR per warmup
+        if warmup_cfg:
+            warmup_steps = warmup_cfg.get('total_iters', 5)
             warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
                 self.optimizer,
                 start_factor=warmup_cfg.get('start_factor', 1/3),
                 end_factor=warmup_cfg.get('end_factor', 1.0),
-                total_iters=warmup_cfg.get('total_iters', 5)
+                total_iters=warmup_steps
             )
 
-            main_scheduler = self._create_main_scheduler()
+        main_scheduler = self._create_main_scheduler(warmup_steps=warmup_steps)
 
-            # Concateno warmup + main
+        # Se c'è warmup, concateno con SequentialLR
+        if warmup_scheduler:
             return torch.optim.lr_scheduler.SequentialLR(
                 self.optimizer,
                 schedulers=[warmup_scheduler, main_scheduler],
-                milestones=[warmup_cfg.get('total_iters', 5)]
+                milestones=[warmup_steps]
             )
         else:
-            return self._create_main_scheduler()
+            return main_scheduler
 
-    def _create_main_scheduler(self):
-        
+
+    def _create_main_scheduler(self, warmup_steps=0):
+        """
+        Crea lo scheduler principale adattando eventuali parametri
+        in base alla presenza di warmup.
+        """
         scheduler_type = self.scheduler_config['type']
         step_on = self.scheduler_config.get('step_on', 'epoch')
-        
+
         if scheduler_type == 'plateau':
-            stepping_policy = self.scheduler_config['step_on']
-            if stepping_policy not in ClassificationMixin.SCALAR_SCORES and stepping_policy != "val":
+            stepping_policy = self.scheduler_config.get('step_on', 'val')
+            if stepping_policy not in ClassificationMixin.SCALAR_SCORES and stepping_policy != "val-loss":
                 raise ValueError(f"'{stepping_policy}' is not a valid metric.")
             return torch.optim.lr_scheduler.ReduceLROnPlateau(
                 self.optimizer,
@@ -856,44 +870,47 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                 threshold=self.scheduler_config['threshold'],
                 min_lr=self.scheduler_config.get('min_lr', 0)
             )
-        
+
         elif scheduler_type == 'step':
+            # milestone rimane invariato, non dipende dal warmup
             return torch.optim.lr_scheduler.MultiStepLR(
                 self.optimizer,
                 milestones=self.scheduler_config['milestones'],
                 gamma=self.scheduler_config['gamma']
             )
-        
+
         elif scheduler_type == 'cosine':
-            total_optimizer_steps = (
-                self.num_epochs if step_on == 'epoch' else self.num_batches_train * self.num_epochs
-            )
+            # T_max deve togliere i passi di warmup
+            total_steps = self.num_epochs if step_on == 'epoch' else self.num_batches_train * self.num_epochs
+            adjusted_T_max = max(total_steps - warmup_steps, 1)  # non può essere 0
             return torch.optim.lr_scheduler.CosineAnnealingLR(
                 self.optimizer,
-                T_max=total_optimizer_steps,
+                T_max=adjusted_T_max,
                 eta_min=self.scheduler_config['eta_min']
             )
-        
+
         elif scheduler_type == 'cosine_warm_restart':
+            # T_0 deve essere almeno 1 e considera warmup se necessario
+            T_0 = max(self.scheduler_config['T_0'] - warmup_steps, 1)
             return torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
                 self.optimizer,
-                T_0=self.scheduler_config['T_0'],
+                T_0=T_0,
                 T_mult=self.scheduler_config['T_mult'],
                 eta_min=self.scheduler_config['eta_min']
             )
-        
+
         elif scheduler_type == 'exp':
             return torch.optim.lr_scheduler.ExponentialLR(
                 optimizer=self.optimizer,
                 gamma=self.scheduler_config['gamma']
             )
-        
+
         elif scheduler_type == 'linear':
             return torch.optim.lr_scheduler.LinearLR(
                 optimizer=self.optimizer,
                 start_factor=self.scheduler_config['start_factor']
             )
-        
+
         elif scheduler_type == 'gigapath':
             from patho_bench.optim.GigaPathOptim import CustomLRScheduler
             default_scheduler_args = {
@@ -901,25 +918,28 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                 'max_epochs': self.num_epochs,
                 'accumulation_steps': self.gradient_accumulation,
                 'len_dataloader': len(self.dataloaders['train']),
+                'warmup_steps': warmup_steps
             }
             return CustomLRScheduler(
                 optimizer=self.optimizer,
                 default_scheduler_args=default_scheduler_args,
                 custom_scheduler_args=self.scheduler_config
             )
-        
+
         elif callable(scheduler_type):
             default_scheduler_args = {
                 'base_lr': self.optimizer_config['base_lr'],
                 'max_epochs': self.num_epochs,
                 'accumulation_steps': self.gradient_accumulation,
                 'len_dataloader': len(self.dataloaders['train']),
+                'warmup_steps': warmup_steps
             }
             return scheduler_type(
                 optimizer=self.optimizer,
                 default_scheduler_args=default_scheduler_args,
                 custom_scheduler_args=self.scheduler_config
             )
+
         else:
             raise NotImplementedError(f"Scheduler type {scheduler_type} not implemented.")
 
@@ -1175,10 +1195,11 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                 self._monitor_scaling_factors_ga
             )
 
-            if self.target_score and validation_scores:
+            score = validation_scores.get(self.target_score)
+            if self.target_score and score:
                 self._print_kv(
                     f"({self.target_score})",
-                    f"{validation_scores.get(self.target_score):.2f}"
+                    f"{score:.2f}"
                 )
 
             print("#" * width_total)
