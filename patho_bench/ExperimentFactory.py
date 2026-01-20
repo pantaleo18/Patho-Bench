@@ -385,11 +385,8 @@ def generate_exp_id(hyperparams):
     return '_'.join(sorted([f'{k}={v}' for k, v in hyperparams.items()]))
     
 def generate_arg_combinations(variables):
-    """
-    Generate all combinations of hyperparameters as independent dictionaries.
-    All mutable values are deep-copied to avoid side-effects.
-    """
-    # Auto-expand COST if set to 'auto'
+    from itertools import product
+    # If cost = 'auto', then automatically sweep over a range of costs (intended for linprobe)
     if 'auto' in make_list(variables.get('COST')):
         cost_list = list(np.logspace(np.log10(10e-6), np.log10(10e5), num=45))
         variables['cost'] = cost_list
