@@ -31,7 +31,7 @@ class DefaultTrainableSlideEncoder(nn.Module):
             device (str or torch.device, optional): Device on which to run the model.
         '''
         super().__init__()
-        self.slide_encoder = copy.deepcopy(slide_encoder) # Deepcopy so that the original slide encoder is not modified across folds
+        self.slide_encoder = copy.deepcopy(slide_encoder)
         self.post_pooling_dim = post_pooling_dim
         self.task_name = task_name
         self.num_classes = num_classes
@@ -179,28 +179,62 @@ class im4MECTrainableSlideClassifier(nn.Module):
 class ABMIL_MILLAB_TrainableSlideClassifier(nn.Module):
     """
     Wrapper per modelli MIL-Lab (es. ABMIL) compatibile con FinetuningExperiment.
+    Supporta batch di training e batch pathobench.
     """
+    
+    def _unfold_pathobench_batch(self, patho_bench_input_batch):
+        return {
+            'features': patho_bench_input_batch['features'],
+            'coords': patho_bench_input_batch.get('coords', None),
+            'mask': patho_bench_input_batch.get('mask', None),
+            'attributes': patho_bench_input_batch.get('attributes', None)
+        }
+    
+    def _prepare_batch(self, batch: dict):
+        """
+        Decide il tipo di batch e ritorna:
+        - features (tensor)
+        - attn_mask (tensor o None)
+        - labels (tensor o None)
+        - current_iter (int o None)
+        """
+        # training through pathobench
+        if "slide" in batch:
+            slide_input = self._unfold_pathobench_batch(batch["slide"])
+            features = slide_input["features"].to(self.device)
+            attn_mask = slide_input.get("mask", None)
+            if attn_mask is not None:
+                attn_mask = attn_mask.to(self.device, dtype=int)
+            labels = batch["labels"][self.task_name].to(self.device)
+            current_iter = batch.get("current_iter", None)
+        else:  # inference
+            features = batch["features"].to(self.device)
+            attn_mask = batch.get("mask", None)
+            if attn_mask is not None:
+                attn_mask = attn_mask.to(self.device, dtype=int)
+            labels = None
+            current_iter = None
+
+        return features, attn_mask, labels, current_iter
 
     def __init__(
         self,
         slide_classifier: nn.Module,
-        post_pooling_dim: int,
         task_name: str,
         num_classes: int,
         loss,
         label_dict: dict,
         device,
-        dropout : float,
+        dropout: float,
         freeze_backbone: bool = False,
-        debug : bool = False,
+        debug: bool = False,
+        post_pooling_dim: int = -1,
         **kwargs
     ):
         super().__init__()
-
-        self.slide_classifier = copy.deepcopy(slide_classifier) # Deep copy to avoid to modify original model while cross-validating.
+        self.slide_classifier = copy.deepcopy(slide_classifier)
         set_dropout(self.slide_classifier, dropout)
-        
-        self.post_pooling_dim = post_pooling_dim
+
         self.task_name = task_name
         self.num_classes = num_classes
         self.loss = loss
@@ -208,23 +242,19 @@ class ABMIL_MILLAB_TrainableSlideClassifier(nn.Module):
         self.device = device
         self.freeze_backbone = freeze_backbone
         self.debug = debug
+        self.post_pooling_dim = post_pooling_dim
 
-        # --- Linear probing ---
         if self.freeze_backbone:
             for p in self.slide_classifier.parameters():
                 p.requires_grad = False
-
             if hasattr(self.slide_classifier, "model") and hasattr(self.slide_classifier.model, "classifier"):
                 for p in self.slide_classifier.model.classifier.parameters():
                     p.requires_grad = True
             else:
-                raise AttributeError(
-                    "slide_classifier non espone model.classifier"
-                )
+                raise AttributeError("slide_classifier non espone model.classifier")
 
         self.to(device)
 
-        # MP: you can also pass to the model loss_fn. Do this in ExperimentFineTuning if needed.
         if isinstance(self.loss, dict):
             for _, l in self.loss.items():
                 l.to(device)
@@ -232,70 +262,36 @@ class ABMIL_MILLAB_TrainableSlideClassifier(nn.Module):
             self.loss.to(device)
 
     def forward(self, batch: dict, output: str = "loss"):
-        """
-        output:
-            - 'loss'     -> ritorna (loss, [{}])
-            - 'logits'   -> ritorna logits
-            - 'features' -> ritorna (loss, {features,attention})
-        """
-
-        # --- Prepare input ---
-        slide_input = Pooler.prepare_slide_encoder_input_batch(batch["slide"])
-
-        h = slide_input["features"].to(self.device)
-        attn_mask = slide_input.get("mask", None)
-
-        if attn_mask is not None:
-            attn_mask = attn_mask.to(self.device, dtype=int)
+        features, attn_mask, labels, current_iter = self._prepare_batch(batch)
+        loss_val = None
 
         # --- Forward MIL-Lab ---
         results_dict, log_dict = self.slide_classifier(
-            h,
+            features,
             attn_mask=attn_mask,
             return_attention=True if self.debug else (output == "features"),
             return_slide_feats=True if self.debug else (output == "features"),
         )
 
-        logits = results_dict["logits"]
+        logits = results_dict.get("logits", None)
+        slide_feats = log_dict.get("slide_feats", None)
+        attention = log_dict.get("attention", None)
 
-        # --- Debug attenzione per patch mascherate ---
-        if self.debug and attn_mask is not None:
-            A = log_dict["attention"]  # B x K x M
-            B, K, M = A.shape
-            att_min = torch.finfo(A.dtype).min
-            print(f"\n=== [{self.__class__}] DEBUG: Attention mask check ===")
-            for b in range(B):
-                for m in range(M):
-                    if attn_mask[b, m] == 0: 
-                        for k in range(K):
-                            att_val = A[b, k, m].item()
-                            print(f"WSI {b}, patch {m}, head {k}: att={att_val:.3e},")
-                            # assert che l'attenzione sui padding sia minima
-                            assert att_val <= att_min / 2, (
-                                f"Attention non minima per patch mascherata "
-                                f"(batch {b}, patch {m}, head {k}): {att_val}"
-                            )
+        # --- Loss computation ---
+        if output == "loss" and labels is not None:
+            if isinstance(self.loss, dict):
+                assert current_iter is not None, "current_iter richiesto per loss bilanciata"
+                loss_fn = self.loss[current_iter]
+                loss_val = loss_fn(logits, labels)
+            else:
+                loss_val = self.loss(logits, labels)
 
         info = [{
-            "slide_features": log_dict.get("slide_feats"),
-            "attention": log_dict.get("attention"),
+            "slide_features": slide_feats,
+            "attention": attention,
+            "logits": logits,
+            "loss": loss_val
         }]
-
-        # --- Logits only ---
-        if output == "logits":
-            return logits
-
-        # --- Loss mode ---
-        labels = batch["labels"][self.task_name].to(self.device)
-
-        if isinstance(self.loss, dict):
-            assert batch.get("current_iter") is not None, (
-                "current_iter richiesto per loss bilanciata"
-            )
-            loss_fn = self.loss[batch["current_iter"]]
-            loss_val = loss_fn(logits, labels)
-        else:
-            loss_val = self.loss(logits, labels)
 
         return loss_val, info
 
@@ -348,7 +344,7 @@ class CLAMTrainableSlideClassifier(nn.Module):
         else:
             self.loss.to(device)
 
-    def forward(self, batch, output: str = "loss"):
+    def forward(self, X, output: str = "loss"):
         """
         Args:
             batch (dict): deve contenere 'slide' con features, mask, coords, attributes.
@@ -360,14 +356,14 @@ class CLAMTrainableSlideClassifier(nn.Module):
         """
 
         # --- Prepare input per CLAM ---
-        slide_input = Pooler.prepare_slide_encoder_input_batch(batch["slide"])
+        slide_input = Pooler.prepare_slide_encoder_input_batch(X["slide"])
         h = slide_input["features"].to(self.device)
         attn_mask = slide_input.get("mask", None)
         if attn_mask is not None:
             attn_mask = attn_mask.to(self.device)
 
         # --- Forward pass ---
-        label = batch["labels"][self.task_name].to(self.device) if "labels" in batch else None
+        label = X["labels"][self.task_name].to(self.device) if "labels" in X else None
         results_dict, log_dict = self.slide_classifier(
             h=h,
             label=label,
@@ -393,7 +389,6 @@ class CLAMTrainableSlideClassifier(nn.Module):
 
         else:
             raise ValueError(f"Invalid output type: {output}")
-
 
 def set_dropout(model: nn.Module, p: float):
     for m in model.modules():
