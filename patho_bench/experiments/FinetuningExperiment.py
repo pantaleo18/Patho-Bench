@@ -849,7 +849,6 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
         else:
             return main_scheduler
 
-
     def _create_main_scheduler(self, warmup_steps=0):
         """
         Crea lo scheduler principale adattando eventuali parametri

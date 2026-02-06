@@ -258,7 +258,7 @@ class ABMIL_MILLAB_TrainableSlideClassifier(nn.Module):
         if isinstance(self.loss, dict):
             for _, l in self.loss.items():
                 l.to(device)
-        else:
+        elif self.loss is not None:
             self.loss.to(device)
 
     def forward(self, batch: dict, output: str = "loss"):
