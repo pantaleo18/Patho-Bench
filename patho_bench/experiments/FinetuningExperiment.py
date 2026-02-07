@@ -466,6 +466,8 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
 
                     # logits: (B, C)
                     logits = model(batch, output='logits')
+                    if isinstance(logits,tuple):
+                        logits = logits[-1][0]['logits']
 
                     # probs: (B, C)
                     probs = torch.softmax(logits, dim=1)
