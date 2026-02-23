@@ -55,6 +55,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
                  early_stop_policy : str = "last-1",
                  patience : int = 3,
                  halt_training_on_folder_early_stop : bool = False,
+                 num_workers : int = 4,
                  **kwargs):
 
         self.task_type = task_type
@@ -81,6 +82,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
         self.patience = patience
         self.halt_training_on_folder_early_stop = halt_training_on_folder_early_stop
         self.target_score = None
+        self.num_workers = num_workers
         self.save_which_checkpoints = self._define_saving_policy(save_which_checkpoints=save_which_checkpoints)
 
         # Set kwargs as extra attributes for saving in config.json
@@ -137,7 +139,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
             self.loggers = self.init_loggers(save_dir = os.path.join(self.results_dir, 'training_metrics', f'fold_{self.current_fold}'))
 
             ### Initialize train and val dataloaders
-            self.dataloaders = {mode: self.dataset.get_dataloader(self.current_fold, mode, batch_size=self.device_batch_size, seed = self.seed) for mode in ['train', 'val']}
+            self.dataloaders = {mode: self.dataset.get_dataloader(self.current_fold, mode, batch_size=self.device_batch_size, seed = self.seed, num_workers=self.num_workers) for mode in ['train', 'val']}
             self.num_phisical_batches_train = len(self.dataloaders['train'])
             self.num_batches_train = math.ceil(self.num_phisical_batches_train / self.gradient_accumulation)
 
@@ -390,7 +392,7 @@ class FinetuningExperiment(LoggingMixin, ClassificationMixin, SurvivalMixin, Bas
         loop = tqdm(range(self.dataset.num_folds))
         for self.current_fold in loop:
             ### Load the dataloader for this fold
-            eval_dataloader = self.dataset.get_dataloader(self.current_fold, split, batch_size=1, seed = self.seed)
+            eval_dataloader = self.dataset.get_dataloader(self.current_fold, split, batch_size=1, seed = self.seed, num_workers=self.num_workers)
             if eval_dataloader is None:
                 return
             loop.set_description(f'Running {split} split on {len(eval_dataloader.dataset)} samples')

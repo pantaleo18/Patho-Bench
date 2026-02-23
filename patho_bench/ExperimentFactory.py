@@ -37,12 +37,12 @@ class ExperimentFactory:
                  patch_embeddings_dirs: list[str],
                  saveto: str,
                  combine_slides_per_patient: bool,
-                 bag_size,
                  gradient_accumulation,
                  num_epochs,
                  balanced: bool,
                  save_which_checkpoints: str,
                  model_args: dict = {},
+                 bag_size : int = None,
                  precision : str = None,
                  gpu : int = -1,
                  device_batch_size : int = 1, 
@@ -60,6 +60,7 @@ class ExperimentFactory:
                  early_stop_policy : str = "last-1",
                  patience : int = 3,
                  halt_training_on_folder_early_stop : bool = False,
+                 num_workers : int = 4, 
                  **kwargs,
         ):
 
@@ -135,7 +136,8 @@ class ExperimentFactory:
             patience = patience,
             halt_training_on_folder_early_stop=halt_training_on_folder_early_stop,
             seed=seed,
-            disable_cudnn=disable_cudnn
+            disable_cudnn=disable_cudnn,
+            num_workers=num_workers
         )
         
         if external_split is None:
